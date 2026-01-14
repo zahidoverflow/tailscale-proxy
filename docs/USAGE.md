@@ -20,6 +20,7 @@ Then choose from the menu:
 - Allowlist (tailnet IPs)
 - Profiles
 - Self-test
+- Diagnostics (full logs, optional file in Downloads)
 - Enable/Disable auto-heal
 - Undo redirect services
 

@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import TextIO
 
 import typer
 from rich import print
@@ -68,6 +69,72 @@ def run_cmd(cmd: str | list[str], sudo: bool = False, capture: bool = True) -> C
     return CmdResult(" ".join(args), proc.returncode, "", "")
 
 
+def log_line(log_fp: TextIO | None, text: str) -> None:
+    if not log_fp:
+        return
+    log_fp.write(text + "\n")
+    log_fp.flush()
+
+
+def log_block(log_fp: TextIO | None, text: str) -> None:
+    if not log_fp:
+        return
+    log_fp.write(text)
+    if not text.endswith("\n"):
+        log_fp.write("\n")
+    log_fp.flush()
+
+
+def print_section(title: str, log_fp: TextIO | None) -> None:
+    header = f"\n=== {title} ==="
+    print(header)
+    log_line(log_fp, header)
+
+
+def run_stream(cmd: list[str], log_fp: TextIO | None) -> int:
+    if log_fp:
+        log_line(log_fp, f"$ {' '.join(shlex.quote(part) for part in cmd)}")
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=False,
+            bufsize=0,
+        )
+    except FileNotFoundError:
+        msg = f"(command not found: {cmd[0]})"
+        print(msg)
+        log_line(log_fp, msg)
+        return 127
+
+    if not proc.stdout:
+        return proc.wait()
+
+    last_text = ""
+    while True:
+        chunk = proc.stdout.read(4096)
+        if not chunk:
+            break
+        text = chunk.decode(errors="replace")
+        last_text = text
+        sys.stdout.write(text)
+        sys.stdout.flush()
+        if log_fp:
+            log_fp.write(text)
+            log_fp.flush()
+    if log_fp and last_text and not last_text.endswith("\n"):
+        log_fp.write("\n")
+        log_fp.flush()
+    return proc.wait()
+
+
+def maybe_sudo(cmd: list[str], use_sudo: bool) -> list[str]:
+    if use_sudo and os.geteuid() != 0:
+        return ["sudo"] + cmd
+    return cmd
+
+
 def cmd_exists(name: str) -> bool:
     return shutil.which(name) is not None
 
@@ -115,6 +182,37 @@ def tailscale_status_json() -> dict:
         return json.loads(res.stdout)
     except json.JSONDecodeError:
         return {}
+
+
+def tailscale_dns_enabled() -> bool | None:
+    res = run_cmd(["tailscale", "dns", "status"], capture=True)
+    out = (res.stdout + res.stderr).lower()
+    if "tailscale dns: enabled" in out:
+        return True
+    if "tailscale dns: disabled" in out:
+        return False
+    return None
+
+
+def read_resolv_conf() -> tuple[list[str], str | None]:
+    path = Path("/etc/resolv.conf")
+    if not path.exists():
+        return [], None
+    target = None
+    try:
+        if path.is_symlink():
+            target = str(path.resolve())
+    except OSError:
+        target = None
+    nameservers: list[str] = []
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line.startswith("nameserver"):
+            continue
+        parts = line.split()
+        if len(parts) > 1:
+            nameservers.append(parts[1])
+    return nameservers, target
 
 
 def tailscale_host_ip_map() -> dict[str, str]:
@@ -1434,17 +1532,52 @@ def attempt_switch_to_used_port(
     return port
 
 
+def resolve_log_dir(primary: Path, legacy: Path | None = None) -> Path:
+    fallback = Path.home() / "Downloads"
+    for candidate in (primary, legacy, fallback):
+        if candidate and candidate.exists() and candidate.is_dir():
+            return candidate
+    for candidate in (primary, fallback):
+        if not candidate:
+            continue
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            if candidate.is_dir():
+                return candidate
+        except OSError:
+            continue
+    return fallback
+
+
+def safe_output_path(path: Path) -> Path:
+    parent = path.parent
+    if parent.exists() and not parent.is_dir():
+        fallback = resolve_log_dir(Path.home() / "Downloads")
+        return fallback / path.name
+    parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def write_setup_log(lines: list[str], output_path: Path | None) -> Path:
     if output_path is None:
         base = Path.home() / ".local" / "share" / APP_ID
         legacy = Path.home() / ".local" / "share" / LEGACY_APP_ID
-        if legacy.exists() and not base.exists():
-            base = legacy
-        output_path = base / "LAST-SETUP.md"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+        base_dir = resolve_log_dir(base, legacy)
+        output_path = base_dir / "LAST-SETUP.md"
+    output_path = safe_output_path(output_path)
     content = "\n".join(lines) + "\n"
     output_path.write_text(content)
     return output_path
+
+
+def diagnostics_path(output_path: Path | None) -> Path:
+    if output_path is not None:
+        return output_path
+    base = Path.home() / ".local" / "share" / APP_ID
+    legacy = Path.home() / ".local" / "share" / LEGACY_APP_ID
+    base_dir = resolve_log_dir(base, legacy)
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return base_dir / f"diagnostics-{ts}.txt"
 
 
 @app.callback(invoke_without_command=True)
@@ -1477,6 +1610,7 @@ def menu() -> None:
     print("14) Allowlist (tailnet IPs)")
     print("15) Profiles")
     print("16) Self-test")
+    print("17) Diagnostics (full logs)")
     print("0) Exit")
 
     choice = Prompt.ask("Enter number", default="1")
@@ -1512,6 +1646,8 @@ def menu() -> None:
         profile_menu()
     elif choice == "16":
         self_test()
+    elif choice == "17":
+        diagnostics_menu()
     else:
         raise typer.Exit(0)
 
@@ -1716,6 +1852,39 @@ def show_dashboard() -> None:
     if systemd_is_active(LEGACY_AUTO_HEAL_TIMER) and not systemd_is_active(AUTO_HEAL_TIMER):
         auto_heal_label = f"{auto_heal_label} (legacy)"
 
+    redsocks_service = redsocks_service_name(distro)
+    redsocks_active = systemd_is_active(redsocks_service)
+    tcp_redirect_active = systemd_is_active("ts-9proxy-redirect.service")
+    udp_tproxy_active = systemd_is_active("ts-9proxy-udp-tproxy.service")
+    udp_block_active = systemd_is_active("ts-udp-block.service")
+    no_leak_active = systemd_is_active("ts-no-leak.service")
+
+    nonlocal_bind = None
+    nonlocal_path = Path("/proc/sys/net/ipv4/ip_nonlocal_bind")
+    if nonlocal_path.exists():
+        nonlocal_bind = nonlocal_path.read_text().strip() == "1"
+
+    nameservers, resolv_target = read_resolv_conf()
+    dns_enabled = tailscale_dns_enabled() if ts_installed else None
+    dns_mode = "system"
+    stub_ns = any(ns in {"127.0.0.53", "127.0.0.1"} for ns in nameservers)
+    stub_target = resolv_target and "stub-resolv.conf" in resolv_target
+    if "100.100.100.100" in nameservers:
+        dns_mode = "tailscale"
+    elif stub_ns or stub_target:
+        dns_mode = "tailscale (stub)" if dns_enabled else "systemd stub"
+    elif dns_enabled:
+        dns_mode = "tailscale (split)"
+
+    if nameservers:
+        dns_label = f"{dns_mode} ({', '.join(nameservers[:2])})"
+        if len(nameservers) > 2:
+            dns_label += " +"
+    else:
+        dns_label = f"{dns_mode} (none)"
+    if resolv_target:
+        dns_label = f"{dns_label} -> {Path(resolv_target).name}"
+
     system_rows = [
         ("Distro", distro),
         ("tailscale", ok_label(ts_installed)),
@@ -1740,6 +1909,29 @@ def show_dashboard() -> None:
     if port_info:
         status_display = f"{port_status_label(port_status)} / {online_label(port_online)}"
 
+    proxy_path_ok = bool(relay_port) and port_is_online(port_info) and redsocks_active and tcp_redirect_active
+    proxy_path_label = "[green]ok[/green]" if proxy_path_ok else "[red]needs attention[/red]"
+
+    if udp_tproxy_active:
+        udp_label = "[green]tproxy on[/green]"
+        if nonlocal_bind is False:
+            udp_label = "[yellow]tproxy on (sysctl)[/yellow]"
+    elif udp_block_active:
+        udp_label = "[yellow]blocked[/yellow]"
+    else:
+        udp_label = "[red]off[/red]"
+
+    summary_rows = [
+        ("Proxy path", proxy_path_label),
+        ("Exit node", state_label(exit_advertised) if exit_advertised is not None else "[yellow]unknown[/yellow]"),
+        ("DNS mode", dns_label),
+        ("Auto-heal", auto_heal_label),
+        ("No-leak", state_label(no_leak_active)),
+        ("UDP mode", udp_label),
+    ]
+    if nonlocal_bind is not None:
+        summary_rows.append(("ip_nonlocal_bind", state_label(nonlocal_bind, "1", "0")))
+
     proxy_rows = [
         ("Logged in", login_label),
         ("Relay port", port_display),
@@ -1748,26 +1940,55 @@ def show_dashboard() -> None:
         ("City", value_label(city, "unknown")),
     ]
 
-    redsocks_service = redsocks_service_name(distro)
     services_rows = [
         ("Auto-heal", auto_heal_label),
-        ("Redsocks", state_label(systemd_is_active(redsocks_service))),
-        ("TCP redirect", state_label(systemd_is_active("ts-9proxy-redirect.service"))),
-        ("UDP TPROXY", state_label(systemd_is_active("ts-9proxy-udp-tproxy.service"))),
-        ("UDP block", state_label(systemd_is_active("ts-udp-block.service"))),
-        ("No-leak", state_label(systemd_is_active("ts-no-leak.service"))),
+        ("Redsocks", state_label(redsocks_active)),
+        ("TCP redirect", state_label(tcp_redirect_active)),
+        ("UDP TPROXY", state_label(udp_tproxy_active)),
+        ("UDP block", state_label(udp_block_active)),
+        ("No-leak", state_label(no_leak_active)),
         ("Local SOCKS", state_label(systemd_is_active(LOCAL_SOCKS_SERVICE))),
         ("Forward", state_label(systemd_is_active(FORWARD_SERVICE))),
         ("HTTP proxy", state_label(systemd_is_active(HTTP_PROXY_SERVICE))),
         ("Allowlist", state_label(systemd_is_active(ALLOWLIST_SERVICE))),
     ]
 
+    notes: list[str] = []
+    if not ts_installed:
+        notes.append("Tailscale is not installed.")
+    if not proxy_installed:
+        notes.append("9proxy is not installed.")
+    if proxy_installed and relay_port is None:
+        notes.append("Relay port is not set.")
+    if proxy_installed and relay_port and not port_is_online(port_info):
+        notes.append("Proxy port is offline.")
+    if not redsocks_active:
+        notes.append("Redsocks is not running.")
+    if not tcp_redirect_active:
+        notes.append("TCP redirect is off (exit node will not proxy).")
+    if udp_tproxy_active and nonlocal_bind is False:
+        notes.append("UDP tproxy needs net.ipv4.ip_nonlocal_bind=1.")
+    if no_leak_active and not proxy_path_ok:
+        notes.append("No-leak is on: traffic will drop until proxy path is ok.")
+
+    notes_text = "All checks look good." if not notes else "\n".join(f"- {item}" for item in notes)
+
     header = Panel(
-        f"[bold cyan]{APP_TITLE}[/bold cyan]\n[dim]Full screen dashboard[/dim]",
+        f"[bold cyan]{APP_TITLE}[/bold cyan]\n[dim]Dashboard[/dim]",
         subtitle=f"Updated {now}",
         border_style="cyan",
     )
     console.print(header)
+    console.print(
+        Columns(
+            [
+                Panel(kv_table(summary_rows), title="Summary", border_style="bright_blue"),
+                Panel(notes_text, title="Notes", border_style="yellow"),
+            ],
+            expand=True,
+            equal=True,
+        )
+    )
     console.print(
         Columns(
             [
@@ -1791,6 +2012,208 @@ def dashboard() -> None:
 @app.command()
 def status() -> None:
     show_dashboard()
+
+
+def run_diagnostics(
+    save: bool,
+    output: Path | None,
+    sudo: bool,
+) -> None:
+    print(Panel("Diagnostics", subtitle="Full setup logs"))
+    log_fp: TextIO | None = None
+    output_path: Path | None = None
+
+    if save:
+        output_path = safe_output_path(diagnostics_path(output))
+        log_fp = output_path.open("w", encoding="utf-8")
+        log_line(log_fp, f"{APP_TITLE} diagnostics log")
+        log_line(log_fp, f"Created: {datetime.now().isoformat(sep=' ', timespec='seconds')}")
+        print(f"[dim]Saving log to {output_path}[/dim]")
+
+    try:
+        print_section("timestamp", log_fp)
+        now = datetime.now().isoformat(sep=" ", timespec="seconds")
+        print(now)
+        log_line(log_fp, now)
+
+        if cmd_exists("tailscale"):
+            print_section("tailscale status json", log_fp)
+            run_stream(["tailscale", "status", "--json"], log_fp)
+
+            print_section("tailscale dns status", log_fp)
+            run_stream(["tailscale", "dns", "status"], log_fp)
+
+            print_section("tailscale netcheck", log_fp)
+            run_stream(["tailscale", "netcheck"], log_fp)
+
+            print_section("tailscale exit/dns flags", log_fp)
+            data = tailscale_status_json()
+            self_node = data.get("Self", {}) if isinstance(data, dict) else {}
+            if not isinstance(self_node, dict):
+                self_node = {}
+            allowed = self_node.get("AllowedIPs", []) or []
+            tailnet = data.get("CurrentTailnet", {}) if isinstance(data, dict) else {}
+            lines = [
+                f"ExitNode: {self_node.get('ExitNode')}",
+                f"ExitNodeOption: {self_node.get('ExitNodeOption')}",
+                f"AllowedIPs: {', '.join(allowed) if allowed else '(none)'}",
+                f"MagicDNSSuffix: {data.get('MagicDNSSuffix')}",
+                f"MagicDNS enabled: {tailnet.get('MagicDNSEnabled')}",
+            ]
+            for line in lines:
+                print(line)
+                log_line(log_fp, line)
+        else:
+            print_section("tailscale", log_fp)
+            print("(tailscale not installed)")
+            log_line(log_fp, "(tailscale not installed)")
+
+        if cmd_exists("9proxy"):
+            print_section("9proxy status", log_fp)
+            run_stream(["9proxy", "setting", "--display"], log_fp)
+            run_stream(["9proxy", "port", "--status"], log_fp)
+        else:
+            print_section("9proxy", log_fp)
+            print("(9proxy not installed)")
+            log_line(log_fp, "(9proxy not installed)")
+
+        print_section("redsocks config", log_fp)
+        cfg_path = redsocks_config_path(detect_distro())
+        if cfg_path.exists():
+            content = cfg_path.read_text()
+            sys.stdout.write(content)
+            if not content.endswith("\n"):
+                sys.stdout.write("\n")
+            log_block(log_fp, content)
+        else:
+            msg = f"(not found: {cfg_path})"
+            print(msg)
+            log_line(log_fp, msg)
+
+        print_section("systemd units", log_fp)
+        run_stream(
+            [
+                "systemctl",
+                "is-active",
+                "redsocks2.service",
+                "redsocks.service",
+                "ts-9proxy-redirect.service",
+                "ts-9proxy-udp-tproxy.service",
+                "ts-udp-block.service",
+                "ts-no-leak.service",
+                "9proxyd.service",
+                "9proxy.service",
+            ],
+            log_fp,
+        )
+
+        print_section("systemd status redsocks", log_fp)
+        run_stream(["systemctl", "status", "--no-pager", "-l", "redsocks2.service"], log_fp)
+        run_stream(["systemctl", "status", "--no-pager", "-l", "redsocks.service"], log_fp)
+
+        print_section("systemd status tproxy", log_fp)
+        run_stream(["systemctl", "status", "--no-pager", "-l", "ts-9proxy-udp-tproxy.service"], log_fp)
+
+        print_section("systemd status redirect", log_fp)
+        run_stream(["systemctl", "status", "--no-pager", "-l", "ts-9proxy-redirect.service"], log_fp)
+
+        print_section("systemd status no-leak", log_fp)
+        run_stream(["systemctl", "status", "--no-pager", "-l", "ts-no-leak.service"], log_fp)
+
+        print_section("iptables nat/mangle/filter (tailscale)", log_fp)
+        if sudo:
+            run_stream(maybe_sudo(["iptables", "-t", "nat", "-S"], sudo), log_fp)
+            run_stream(maybe_sudo(["iptables", "-t", "mangle", "-S"], sudo), log_fp)
+            run_stream(maybe_sudo(["iptables", "-t", "filter", "-S"], sudo), log_fp)
+        else:
+            msg = "(skipped: re-run with --sudo for iptables)"
+            print(msg)
+            log_line(log_fp, msg)
+
+        print_section("ip rules + routes (tproxy)", log_fp)
+        if sudo:
+            run_stream(maybe_sudo(["ip", "rule", "show"], sudo), log_fp)
+            run_stream(maybe_sudo(["ip", "route", "show", "table", "100"], sudo), log_fp)
+        else:
+            msg = "(skipped: re-run with --sudo for ip rules/routes)"
+            print(msg)
+            log_line(log_fp, msg)
+
+        print_section("sysctl", log_fp)
+        run_stream(["sysctl", "net.ipv4.ip_nonlocal_bind", "net.ipv4.ip_forward"], log_fp)
+
+        print_section("resolv.conf", log_fp)
+        resolv = Path("/etc/resolv.conf")
+        if resolv.exists():
+            content = resolv.read_text()
+            sys.stdout.write(content)
+            if not content.endswith("\n"):
+                sys.stdout.write("\n")
+            log_block(log_fp, content)
+        else:
+            msg = "(not found: /etc/resolv.conf)"
+            print(msg)
+            log_line(log_fp, msg)
+
+        print_section("last setup log", log_fp)
+        base = Path.home() / ".local" / "share" / APP_ID
+        legacy = Path.home() / ".local" / "share" / LEGACY_APP_ID
+        for path in (base, legacy):
+            if path.exists():
+                if path.is_dir():
+                    print(str(path))
+                    log_line(log_fp, str(path))
+                    for item in sorted(path.iterdir()):
+                        entry = f"- {item.name}"
+                        print(entry)
+                        log_line(log_fp, entry)
+                else:
+                    msg = f"{path} (not a directory)"
+                    print(msg)
+                    log_line(log_fp, msg)
+        log_candidate = None
+        if base.is_dir():
+            candidate = base / "LAST-SETUP.md"
+            if candidate.exists():
+                log_candidate = candidate
+        if log_candidate is None and legacy.is_dir():
+            candidate = legacy / "LAST-SETUP.md"
+            if candidate.exists():
+                log_candidate = candidate
+        if log_candidate and log_candidate.exists():
+            content = log_candidate.read_text()
+            sys.stdout.write(content)
+            if not content.endswith("\n"):
+                sys.stdout.write("\n")
+            log_block(log_fp, content)
+        else:
+            msg = "(no LAST-SETUP.md found)"
+            print(msg)
+            log_line(log_fp, msg)
+    finally:
+        if log_fp:
+            log_fp.close()
+        if save and output_path:
+            print(f"[green]Saved diagnostics to {output_path}[/green]")
+
+
+def diagnostics_menu() -> None:
+    save = Confirm.ask("Save a log file in Downloads?", default=True)
+    output: Path | None = None
+    if save:
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        output = Path.home() / "Downloads" / f"{APP_ID}-diagnostics-{ts}.txt"
+    sudo = Confirm.ask("Include sudo checks (iptables/rules)?", default=True)
+    run_diagnostics(save=save, output=output, sudo=sudo)
+
+
+@app.command()
+def diagnostics(
+    save: bool = True,
+    output: Path | None = None,
+    sudo: bool = False,
+) -> None:
+    run_diagnostics(save=save, output=output, sudo=sudo)
 
 
 @app.command()

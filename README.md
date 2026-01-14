@@ -82,6 +82,7 @@ Advanced (optional) commands:
 - `tailscale-proxy profile-list` : list profiles
 - `tailscale-proxy profile-apply` : apply a profile
 - `tailscale-proxy self-test` : quick health check
+- `tailscale-proxy diagnostics` : full setup logs (menu can save to Downloads; use `--sudo` for iptables)
 - `tailscale-proxy undo` : remove redirect services
 
 The wizard will detect any **already used** 9proxy ports and reuse them by default,
