@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+.dist/
+dist/
+build/
+*.egg-info/
+docs/LAST-SETUP.md
+*.crt
+*.key
+*.pac
+*.log
+.env

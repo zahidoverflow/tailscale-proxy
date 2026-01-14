@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tailscale-proxy"
+version = "0.1.0"
+description = "Friendly wizard for 9proxy + Tailscale setup"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [
+  { name = "zahidoverflow" }
+]
+dependencies = [
+  "typer>=0.12.3",
+  "rich>=13.7.1"
+]
+
+[project.scripts]
+tailscale-proxy = "proxy_tailscale.cli:app"
+proxy-tailscale = "proxy_tailscale.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/proxy_tailscale"]
