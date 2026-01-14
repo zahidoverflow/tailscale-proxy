@@ -20,6 +20,7 @@ from pathlib import Path
 
 import typer
 from rich import print
+from rich.columns import Columns
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
@@ -1449,18 +1450,23 @@ def write_setup_log(lines: list[str], output_path: Path | None) -> Path:
 @app.callback(invoke_without_command=True)
 def main(ctx: typer.Context) -> None:
     if ctx.invoked_subcommand is None:
-        menu()
+        try:
+            menu()
+        except KeyboardInterrupt:
+            print("\n[bold yellow]Exiting.[/bold yellow]")
+            raise typer.Exit(0)
 
 
 def menu() -> None:
-    print(Panel(APP_TITLE, subtitle="Simple menu, no commands to remember"))
+    show_dashboard()
+    print("\n[bold]Menu[/bold]")
     print("Choose an action:")
-    print("1) Quick setup (recommended)")
-    print("2) Fix offline (no new IP)")
-    print("3) Switch to another USED port (Today list)")
-    print("4) Enable auto-heal (restart only)")
-    print("5) Disable auto-heal")
-    print("6) Status")
+    print("1) Dashboard (refresh)")
+    print("2) Quick setup (recommended)")
+    print("3) Fix offline (no new IP)")
+    print("4) Switch to another USED port (Today list)")
+    print("5) Enable auto-heal (restart only)")
+    print("6) Disable auto-heal")
     print("7) Undo redirect services")
     print("8) Stable mode (recommended for phone)")
     print("9) No-leak strict mode (toggle)")
@@ -1475,17 +1481,17 @@ def menu() -> None:
 
     choice = Prompt.ask("Enter number", default="1")
     if choice == "1":
-        wizard()
+        show_dashboard()
     elif choice == "2":
-        doctor()
+        wizard()
     elif choice == "3":
-        switch_port()
+        doctor()
     elif choice == "4":
-        enable_auto_heal()
+        switch_port()
     elif choice == "5":
-        disable_auto_heal()
+        enable_auto_heal()
     elif choice == "6":
-        status()
+        disable_auto_heal()
     elif choice == "7":
         undo()
     elif choice == "8":
@@ -1609,52 +1615,182 @@ def allowlist_menu() -> None:
     allowlist_on(port, allowed)
 
 
+def ok_label(value: bool) -> str:
+    return "[green]ok[/green]" if value else "[red]missing[/red]"
+
+
+def state_label(value: bool, on: str = "on", off: str = "off") -> str:
+    return f"[green]{on}[/green]" if value else f"[red]{off}[/red]"
+
+
+def value_label(value: str | None, fallback: str = "unknown") -> str:
+    if value:
+        return value
+    return f"[yellow]{fallback}[/yellow]"
+
+
+def online_label(value: str | None) -> str:
+    if not value:
+        return "[yellow]unknown[/yellow]"
+    lowered = value.strip().lower()
+    if lowered == "online":
+        return "[green]online[/green]"
+    if lowered == "offline":
+        return "[red]offline[/red]"
+    return f"[yellow]{value}[/yellow]"
+
+
+def port_status_label(value: str | None) -> str:
+    if not value:
+        return "[yellow]unknown[/yellow]"
+    lowered = value.strip().lower()
+    if lowered == "used":
+        return "[green]used[/green]"
+    if lowered == "remaining":
+        return "[yellow]remaining[/yellow]"
+    return value
+
+
+def backend_label(value: str | None, installed: bool) -> str:
+    if not installed:
+        return "[red]missing[/red]"
+    if not value:
+        return "[yellow]unknown[/yellow]"
+    lowered = value.strip().lower()
+    if lowered == "running":
+        return f"[green]{value}[/green]"
+    return f"[yellow]{value}[/yellow]"
+
+
+def kv_table(rows: list[tuple[str, str]]) -> Table:
+    table = Table.grid(padding=(0, 1))
+    table.add_column(style="bold cyan", no_wrap=True)
+    table.add_column()
+    for key, value in rows:
+        table.add_row(key, value)
+    return table
+
+
+def show_dashboard() -> None:
+    if console.is_terminal:
+        console.clear()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    distro = detect_distro()
+    ts_installed = cmd_exists("tailscale")
+    proxy_installed = cmd_exists("9proxy")
+    redsocks_installed = cmd_exists("redsocks") or cmd_exists("redsocks2")
+
+    ts_data = tailscale_status_json() if ts_installed else {}
+    self_node = ts_data.get("Self", {})
+    if not isinstance(self_node, dict):
+        self_node = {}
+
+    host = self_node.get("HostName") or ""
+    dns = self_node.get("DNSName") or ""
+    dns = dns.rstrip(".") if dns else ""
+    ip = tailscale_ip() if ts_installed else None
+    if not ip:
+        ips = self_node.get("TailscaleIPs", []) or []
+        if isinstance(ips, list):
+            ip = next((addr for addr in ips if "." in addr), None)
+    backend_state = ts_data.get("BackendState", "") if ts_installed else ""
+    allowed = self_node.get("AllowedIPs", []) if isinstance(self_node, dict) else []
+    exit_advertised = None
+    if isinstance(allowed, list):
+        exit_advertised = "0.0.0.0/0" in allowed or "::/0" in allowed
+
+    relay_port = current_relay_port(redsocks_config_path(distro))
+    ports: dict[int, dict[str, str]] = {}
+    if proxy_installed:
+        _, ports = fetch_port_status()
+    port_info = ports.get(relay_port) if relay_port else None
+    port_status = port_info.get("status") if port_info else None
+    port_online = port_info.get("online") if port_info else None
+    public_ip = port_info.get("public_ip") if port_info else None
+    city = port_info.get("city") if port_info else None
+
+    logged_in = is_9proxy_logged_in() if proxy_installed else None
+
+    auto_heal_active = systemd_is_active(AUTO_HEAL_TIMER) or systemd_is_active(LEGACY_AUTO_HEAL_TIMER)
+    auto_heal_label = state_label(auto_heal_active)
+    if systemd_is_active(LEGACY_AUTO_HEAL_TIMER) and not systemd_is_active(AUTO_HEAL_TIMER):
+        auto_heal_label = f"{auto_heal_label} (legacy)"
+
+    system_rows = [
+        ("Distro", distro),
+        ("tailscale", ok_label(ts_installed)),
+        ("9proxy", ok_label(proxy_installed)),
+        ("redsocks", ok_label(redsocks_installed)),
+    ]
+    ts_rows = [
+        ("State", backend_label(backend_state, ts_installed)),
+        ("Host", value_label(host, "unknown")),
+        ("DNS", value_label(dns, "unknown")),
+        ("Tailnet IP", value_label(ip, "unknown")),
+    ]
+    if exit_advertised is not None:
+        ts_rows.append(("Exit node", state_label(exit_advertised)))
+
+    login_label = value_label(None)
+    if logged_in is not None:
+        login_label = state_label(logged_in, "yes", "no")
+
+    port_display = str(relay_port) if relay_port else "not set"
+    status_display = value_label(None)
+    if port_info:
+        status_display = f"{port_status_label(port_status)} / {online_label(port_online)}"
+
+    proxy_rows = [
+        ("Logged in", login_label),
+        ("Relay port", port_display),
+        ("Port state", status_display),
+        ("Public IP", value_label(public_ip, "unknown")),
+        ("City", value_label(city, "unknown")),
+    ]
+
+    redsocks_service = redsocks_service_name(distro)
+    services_rows = [
+        ("Auto-heal", auto_heal_label),
+        ("Redsocks", state_label(systemd_is_active(redsocks_service))),
+        ("TCP redirect", state_label(systemd_is_active("ts-9proxy-redirect.service"))),
+        ("UDP TPROXY", state_label(systemd_is_active("ts-9proxy-udp-tproxy.service"))),
+        ("UDP block", state_label(systemd_is_active("ts-udp-block.service"))),
+        ("No-leak", state_label(systemd_is_active("ts-no-leak.service"))),
+        ("Local SOCKS", state_label(systemd_is_active(LOCAL_SOCKS_SERVICE))),
+        ("Forward", state_label(systemd_is_active(FORWARD_SERVICE))),
+        ("HTTP proxy", state_label(systemd_is_active(HTTP_PROXY_SERVICE))),
+        ("Allowlist", state_label(systemd_is_active(ALLOWLIST_SERVICE))),
+    ]
+
+    header = Panel(
+        f"[bold cyan]{APP_TITLE}[/bold cyan]\n[dim]Full screen dashboard[/dim]",
+        subtitle=f"Updated {now}",
+        border_style="cyan",
+    )
+    console.print(header)
+    console.print(
+        Columns(
+            [
+                Panel(kv_table(system_rows), title="System", border_style="cyan"),
+                Panel(kv_table(ts_rows), title="Tailscale", border_style="green"),
+                Panel(kv_table(proxy_rows), title="9proxy", border_style="magenta"),
+            ],
+            expand=True,
+            equal=True,
+        )
+    )
+    console.print(Panel(kv_table(services_rows), title="Services + modes", border_style="blue"))
+    print("[dim]Tip: Ctrl+C exits at any time.[/dim]")
+
+
+@app.command("dashboard")
+def dashboard() -> None:
+    show_dashboard()
+
+
 @app.command()
 def status() -> None:
-    distro = detect_distro()
-    table = Table(title=f"{APP_TITLE} status")
-    table.add_column("Check")
-    table.add_column("Value")
-
-    table.add_row("Distro", distro)
-    table.add_row("9proxy", "ok" if cmd_exists("9proxy") else "missing")
-    table.add_row("tailscale", "ok" if cmd_exists("tailscale") else "missing")
-
-    ip = tailscale_ip() if cmd_exists("tailscale") else None
-    table.add_row("Tailnet IP", ip or "not available")
-
-    console.print(table)
-
-    if cmd_exists("tailscale"):
-        print("\n[bold]tailscale status[/bold]")
-        print(tailscale_status() or "(no output)")
-
-    if cmd_exists("9proxy"):
-        print("\n[bold]9proxy port status[/bold]")
-        res = run_cmd(["9proxy", "port", "--status"], capture=True)
-        print(res.stdout.strip() or res.stderr.strip() or "(no output)")
-
-    for svc in (
-        "redsocks.service",
-        "redsocks2.service",
-        "ts-9proxy-redirect.service",
-        "ts-9proxy-udp-tproxy.service",
-        "ts-udp-block.service",
-        "ts-no-leak.service",
-        LOCAL_SOCKS_SERVICE,
-        FORWARD_SERVICE,
-        HTTP_PROXY_SERVICE,
-        ALLOWLIST_SERVICE,
-    ):
-        res = run_cmd(["systemctl", "is-active", svc], capture=True)
-        if res.returncode == 0:
-            print(f"{svc}: {res.stdout.strip()}")
-
-    for timer in (AUTO_HEAL_TIMER, LEGACY_AUTO_HEAL_TIMER):
-        res = run_cmd(["systemctl", "is-active", timer], capture=True)
-        if res.returncode == 0:
-            label = timer if timer == AUTO_HEAL_TIMER else f"{timer} (legacy)"
-            print(f"{label}: {res.stdout.strip()}")
+    show_dashboard()
 
 
 @app.command()

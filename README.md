@@ -51,11 +51,12 @@ tailscale-proxy wizard --save-doc docs/LAST-SETUP.md
 ```
 
 ## Quick usage
-- Just run `tailscale-proxy` and choose from the menu.
+- Just run `tailscale-proxy` and choose from the menu (dashboard shows first).
 - It will not consume new IPs unless you explicitly confirm it.
 
 Advanced (optional) commands:
-- `tailscale-proxy status` : show current status
+- `tailscale-proxy dashboard` : full-screen dashboard
+- `tailscale-proxy status` : alias for dashboard
 - `tailscale-proxy doctor` : fix offline ports without consuming new IPs
 - `tailscale-proxy watch` : monitor port health (will ask before refreshing)
 - `tailscale-proxy switch-port` : switch to another USED port from Today's list

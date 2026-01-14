@@ -7,6 +7,7 @@ tailscale-proxy
 ```
 
 Then choose from the menu:
+- Dashboard (refresh)
 - Quick setup
 - Fix offline (no new IP)
 - Switch to another USED port (Today list)
@@ -20,7 +21,7 @@ Then choose from the menu:
 - Profiles
 - Self-test
 - Enable/Disable auto-heal
-- Status / Undo
+- Undo redirect services
 
 ## If websites stop loading
 1) Run `tailscale-proxy`
