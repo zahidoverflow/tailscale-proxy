@@ -8,6 +8,17 @@
 
 A friendly, interactive wizard to set up 9proxy + Tailscale for easy sharing across devices.
 
+## Super simple install (recommended)
+```bash
+pipx install git+https://github.com/zahidoverflow/tailscale-proxy.git
+tailscale-proxy
+```
+
+First run:
+- Checks required system dependencies (9proxy, tailscale, redsocks)
+- Shows the exact install command for your distro
+- Guides you with clean, minimal prompts
+
 ## What it does
 - Guides you through 9proxy + Tailscale setup with clear prompts
 - Supports safe tailnet-only sharing (recommended)
@@ -23,8 +34,8 @@ A friendly, interactive wizard to set up 9proxy + Tailscale for easy sharing acr
 - Built-in profiles and self-test
 - Writes a noob-friendly setup log you can keep for later
 
-## Install (pipx)
-From this folder:
+## Developer install (editable)
+From the repo folder:
 ```bash
 pipx install -e .
 ```
@@ -34,7 +45,7 @@ Run (opens a friendly menu):
 tailscale-proxy
 ```
 
-Save the setup log into this repo:
+Save the setup log (kept local, gitignored by default):
 ```bash
 tailscale-proxy wizard --save-doc docs/LAST-SETUP.md
 ```
