@@ -1,5 +1,11 @@
 # tailscale-proxy
 
+[![License](https://img.shields.io/github/license/zahidoverflow/tailscale-proxy)](LICENSE)
+[![Last Commit](https://img.shields.io/github/last-commit/zahidoverflow/tailscale-proxy)](https://github.com/zahidoverflow/tailscale-proxy/commits/main)
+[![Stars](https://img.shields.io/github/stars/zahidoverflow/tailscale-proxy?style=social)](https://github.com/zahidoverflow/tailscale-proxy/stargazers)
+
+![Demo](assets/demo.gif)
+
 A friendly, interactive wizard to set up 9proxy + Tailscale for easy sharing across devices.
 
 ## What it does
