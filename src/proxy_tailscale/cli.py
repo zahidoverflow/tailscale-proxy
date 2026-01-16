@@ -1621,7 +1621,7 @@ def menu() -> None:
     elif choice == "7":
         share_allowlist_submenu()
     elif choice == "8":
-        undo()
+        cleanup_submenu()
     elif choice == "9":
         diagnostics_submenu()
     elif choice == "10":
@@ -1742,6 +1742,24 @@ def diagnostics_submenu() -> None:
         self_test()
     elif choice == "2":
         diagnostics_menu()
+
+
+def cleanup_submenu() -> None:
+    """Sub-menu for cleanup and mode switching."""
+    console.print(
+        Panel(
+            "[bold]1[/bold] Normal mode (stop services, keep installed)\n"
+            "[bold]2[/bold] Undo (remove all redirect services)\n"
+            "[bold]0[/bold] Back",
+            title="[bold]Cleanup / Normal Mode[/bold]",
+            border_style="red",
+        )
+    )
+    choice = Prompt.ask("Choice", default="0")
+    if choice == "1":
+        normal_mode()
+    elif choice == "2":
+        undo()
 
 
 def prompt_int(label: str, default: int) -> int:
@@ -3207,6 +3225,57 @@ def enable_redirect(
 
     print("\n[bold green]TCP redirect is now active.[/bold green]")
     print("Traffic from tailnet clients will be proxied through 9proxy.")
+
+
+@app.command("normal-mode")
+def normal_mode() -> None:
+    """Stop all proxy services and return system to normal (non-proxied) state."""
+    distro = detect_distro()
+    redsocks_svc = redsocks_service_name(distro)
+
+    print(Panel("Switch to normal mode (stop all proxy services)", title="Normal Mode"))
+    print("This will stop all redirect/proxy services but keep them installed.")
+    print("You can re-enable them later with 'tailscale-proxy enable-redirect' or the wizard.\n")
+
+    if not Confirm.ask("Stop all proxy services now?", default=True):
+        raise typer.Exit(0)
+
+    services = [
+        "ts-9proxy-redirect.service",
+        "ts-9proxy-udp-tproxy.service",
+        "ts-udp-block.service",
+        "ts-no-leak.service",
+        redsocks_svc,
+        LOCAL_SOCKS_SERVICE,
+        FORWARD_SERVICE,
+        HTTP_PROXY_SERVICE,
+        ALLOWLIST_SERVICE,
+        AUTO_HEAL_SERVICE,
+    ]
+
+    stopped = []
+    for svc in services:
+        result = run_cmd(["systemctl", "is-active", svc], sudo=True, capture=True)
+        if result.returncode == 0:  # Service is active
+            run_cmd(["systemctl", "stop", svc], sudo=True, capture=False)
+            stopped.append(svc)
+
+    if stopped:
+        print(f"\n[green]Stopped {len(stopped)} service(s):[/green]")
+        for svc in stopped:
+            print(f"  - {svc}")
+    else:
+        print("\n[yellow]No active proxy services found.[/yellow]")
+
+    # Also disable exit node if active
+    ts_status = tailscale_status_json()
+    if ts_status and ts_status.get("Self", {}).get("ExitNodeOption"):
+        if Confirm.ask("\nAlso stop advertising as exit node?", default=False):
+            run_cmd(["tailscale", "up", "--advertise-exit-node=false"], sudo=True, capture=False)
+            print("[green]Exit node advertisement disabled.[/green]")
+
+    print("\n[bold green]System is now in normal mode.[/bold green]")
+    print("Internet traffic will use your regular connection (not proxied).")
 
 
 @app.command()
