@@ -76,7 +76,8 @@ pipx install -e .
 - Interactive setup wizard with dashboard
 - Safe tailnet-only proxy binding
 - Transparent TCP proxy (exit node)
-- UDP/QUIC routing via TPROXY
+- UDP/QUIC routing via TPROXY (default)
+- DNS through proxy (no DNS leak)
 - No-leak strict mode (killswitch)
 
 </td>
@@ -88,6 +89,7 @@ pipx install -e .
 - TCP/UDP port forwarding with TLS
 - `.tshost` hostname resolution
 - Tailnet IP allowlist
+- IP reputation checker
 
 </td>
 </tr>
@@ -129,8 +131,9 @@ The wizard will:
 1. Check system dependencies
 2. Verify Tailscale connection
 3. Detect available 9proxy ports
-4. Configure transparent proxying
+4. Configure transparent proxying (TCP + UDP by default)
 5. Set up systemd services
+6. Enable DNS through proxy (fixes DNS leak)
 
 ---
 
@@ -144,6 +147,7 @@ The wizard will:
 | `tailscale-proxy wizard` | Run the full setup wizard |
 | `tailscale-proxy dashboard` | Show proxy status dashboard |
 | `tailscale-proxy doctor` | Fix offline ports without consuming new IPs |
+| `tailscale-proxy fix-dns-leak` | Fix DNS to go through proxy |
 | `tailscale-proxy self-test` | Quick health check |
 
 ### Proxy Management
@@ -151,6 +155,8 @@ The wizard will:
 | Command | Description |
 |---------|-------------|
 | `switch-port` | Switch to another USED port from Today's list |
+| `enable-redirect` | Enable TCP+UDP redirect (default includes UDP for DNS) |
+| `normal-mode` | Stop all proxy services (keep installed) |
 | `auto-heal-on` | Enable background auto-heal timer |
 | `auto-heal-smart-on` | Auto-heal + switch USED port (no new IPs) |
 | `auto-heal-off` | Disable background auto-heal |

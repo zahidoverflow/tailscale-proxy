@@ -7,22 +7,25 @@ tailscale-proxy
 ```
 
 Then choose from the menu:
-- Dashboard (refresh)
-- Quick setup
-- Fix offline (no new IP)
-- Switch to another USED port (Today list)
-- Stable mode (recommended for phone)
-- No-leak strict mode (toggle)
-- Local SOCKS forwarder (desktop)
-- Port forwarding (TCP/UDP)
-- HTTP proxy + PAC
-- Share (QR + info)
-- Allowlist (tailnet IPs)
-- Profiles
-- Self-test
-- Diagnostics (full logs, optional file in Downloads)
-- Enable/Disable auto-heal
-- Undo redirect services
+- **Dashboard** (system status)
+- **Quick setup** (wizard)
+- **Fix offline** (no new IP)
+- **Switch port** (another USED port)
+- **Stable mode** (recommended for phone)
+- **No-leak strict mode** (toggle)
+- **Normal mode** (stop all proxy services)
+- **Fix DNS leak** (DNS through proxy)
+- **Local SOCKS forwarder** (desktop)
+- **Port forwarding** (TCP/UDP)
+- **HTTP proxy + PAC**
+- **Share** (QR + info)
+- **Allowlist** (tailnet IPs)
+- **Profiles**
+- **Self-test**
+- **Diagnostics** (full logs)
+- **Enable/Disable auto-heal**
+- **Enable redirect** (TCP+UDP)
+- **Undo** redirect services
 
 ## If websites stop loading
 1) Run `tailscale-proxy`
@@ -36,6 +39,25 @@ Automatically restarts 9proxy and switches to another USED port when needed:
 ```bash
 tailscale-proxy auto-heal-smart-on
 ```
+
+## Normal mode (stop proxy)
+Temporarily stop all proxy services without uninstalling:
+```bash
+tailscale-proxy normal-mode
+```
+
+To re-enable:
+```bash
+tailscale-proxy enable-redirect
+```
+
+## Fix DNS leak
+If dnsleaktest.com shows wrong DNS servers (not your residential ISP), fix it:
+```bash
+tailscale-proxy fix-dns-leak
+```
+
+This enables UDP TPROXY so DNS queries go through the SOCKS5 proxy and exit from the residential IP.
 
 ## No-leak strict mode
 Use this if you want a hard "no leaks" rule. It blocks all forwarding

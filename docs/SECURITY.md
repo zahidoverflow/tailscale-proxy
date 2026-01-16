@@ -1,9 +1,21 @@
 # Security and safety notes
 
-Recommended safe default:
+Recommended safe defaults:
 - Bind 9proxy to your Tailscale IP only (tailnet-only)
 - Share access using Tailscale share links
+- Enable UDP TPROXY for DNS through proxy (prevents DNS leak)
 - Avoid public open proxy unless you fully understand the risk
+
+## Quick setup (recommended)
+The wizard handles all security configuration:
+```bash
+tailscale-proxy wizard
+```
+
+Or enable TCP+UDP redirect (UDP enabled by default for DNS):
+```bash
+tailscale-proxy enable-redirect
+```
 
 ## TCP redirect (exit node)
 Script for TCP redirect (iptables):
@@ -64,8 +76,22 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now ts-9proxy-redirect.service
 ```
 
-## UDP/QUIC redirect (advanced)
-This is experimental and may break some apps.
+## UDP/QUIC redirect (required for DNS through proxy)
+
+**Why UDP TPROXY?** DNS uses UDP port 53. Without UDP TPROXY, DNS queries
+bypass the proxy and dnsleaktest.com will show wrong DNS servers.
+
+The wizard enables this by default. To enable manually:
+```bash
+tailscale-proxy enable-redirect  # UDP enabled by default
+```
+
+Or fix DNS leak on existing setup:
+```bash
+tailscale-proxy fix-dns-leak
+```
+
+### Manual UDP TPROXY setup
 
 1) Add redudp block to redsocks config:
 ```bash

@@ -113,9 +113,30 @@ Start:
 5) Add iptables redirect:
 Create `/usr/local/sbin/ts-9proxy-redirect.sh` and systemd unit as shown in `docs/SECURITY.md`.
 
-## G) UDP/QUIC (advanced)
-UDP needs redudp + TPROXY. This is advanced and may break some apps.
-See `docs/SECURITY.md` for the full script and systemd unit.
+## G) UDP/QUIC + DNS through proxy (recommended)
+UDP TPROXY is required for DNS queries to go through the SOCKS5 proxy.
+Without this, dnsleaktest.com will show wrong DNS servers.
+
+Add redudp to your redsocks config:
+```bash
+redudp {
+  bind = "0.0.0.0:12346";
+  relay = "<tailscale-ip>:60000";
+  type = socks5;
+  udp_timeout = 30;
+  udp_timeout_stream = 180;
+}
+```
+
+Then set up the TPROXY iptables rules. The wizard does this automatically:
+```bash
+tailscale-proxy enable-redirect  # includes UDP by default
+```
+
+Or to fix DNS leak on existing setup:
+```bash
+tailscale-proxy fix-dns-leak
+```
 
 ## H) No-leak strict mode (optional)
 This is a "killswitch" that blocks any forwarding from `tailscale0`.

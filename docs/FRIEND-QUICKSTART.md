@@ -12,20 +12,21 @@ This is the easiest and safest way for non-tech users.
 - Accept the shared device
 
 3) Choose how to use the proxy
-Option A (no settings):
+
+**Option A - Exit Node (recommended):**
 - Open Tailscale app
 - Exit node -> select the shared PC
-- Done
+- Done! All traffic goes through the proxy
 
-Option B (per-app proxy):
-- Proxy host: <tailscale-ip>
-- Proxy port: 60000
+**Option B - Per-app proxy:**
+- Proxy host: `<tailscale-ip>`
+- Proxy port: `60000`
 - Proxy type: SOCKS5 (or HTTP)
 
-Option C (QR share):
+**Option C - QR share:**
 - Run `tailscale-proxy share --port 60000` on the host
 - Scan the QR to auto-fill the proxy in supported apps
 
 ## Test
-Open: https://api.ipify.org
-You should see the proxy IP.
+1. IP Check: https://api.ipify.org - should show residential proxy IP
+2. DNS Check: https://dnsleaktest.com - should show ISP's DNS (not Google/Cloudflare)
