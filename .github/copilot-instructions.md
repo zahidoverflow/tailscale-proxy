@@ -1,5 +1,9 @@
 # Copilot Instructions for tailscale-proxy
 
+## ⚠️ CRITICAL: Never Change Proxy IP
+
+**NEVER run commands that switch proxy ports or take a new IP.** The residential IP must stay consistent for payment gateways and fraud detection systems. Always use port **60000**. Avoid: `switch-port`, `rotate-ip`, `new-ip`, or any port changes in `set-port`.
+
 ## Project Overview
 
 A Python CLI wizard for setting up 9proxy + Tailscale transparent proxying. Single-file architecture (`src/proxy_tailscale/cli.py`, ~3200 lines) using Typer + Rich for interactive terminal UX.

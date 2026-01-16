@@ -744,11 +744,13 @@ def ensure_redsocks_caps_if_needed(distro: str) -> None:
     if distro != "arch":
         return
     # CAP_NET_ADMIN + CAP_NET_RAW for TPROXY, CAP_NET_BIND_SERVICE for UDP port binding
+    # LimitNOFILE fixes "Too many open files" errors under heavy load
     override = textwrap.dedent(
         """
         [Service]
         AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE
         CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE
+        LimitNOFILE=65535
         """
     ).lstrip()
     path = Path("/etc/systemd/system/redsocks2.service.d/override.conf")
@@ -3379,7 +3381,7 @@ def dns_proxy_script() -> str:
             """Handle UDP DNS queries."""
             while True:
                 try:
-                    data, addr = sock.recvfrom(512)
+                    data, addr = sock.recvfrom(65536)  # Large buffer for EDNS0
                     response = forward_dns_query(data)
                     sock.sendto(response, addr)
                 except Exception as e:
@@ -3388,11 +3390,21 @@ def dns_proxy_script() -> str:
         def handle_dns_tcp(client_sock, addr):
             """Handle TCP DNS queries."""
             try:
-                length_data = client_sock.recv(2)
-                if len(length_data) < 2:
-                    return
+                # Read 2-byte length prefix
+                length_data = b""
+                while len(length_data) < 2:
+                    chunk = client_sock.recv(2 - len(length_data))
+                    if not chunk:
+                        return
+                    length_data += chunk
                 length = struct.unpack(">H", length_data)[0]
-                query = client_sock.recv(length)
+                # Read full query
+                query = b""
+                while len(query) < length:
+                    chunk = client_sock.recv(length - len(query))
+                    if not chunk:
+                        return
+                    query += chunk
                 response = forward_dns_query(query)
                 client_sock.send(struct.pack(">H", len(response)) + response)
             except Exception as e:
@@ -3475,20 +3487,32 @@ def fix_dns_leak(
         print("[red]Tailscale IP not found.[/red]")
         raise typer.Exit(1)
 
-    # Get proxy port and IP info
+    # Get current relay port from redsocks config (the port actually being used)
+    cfg_path = redsocks_config_path(distro)
+    relay_port = current_relay_port(cfg_path)
+
+    # Also get port status for display
     _, ports = fetch_port_status()
-    port = 60000
     proxy_ip = None
     proxy_city = None
-    for p, info in ports.items():
-        if info.get("status", "").lower() == "used" and port_is_online(info):
-            port = p
-            proxy_ip = info.get("public_ip", "")
-            proxy_city = info.get("city", "")
-            break
+
+    # Use relay port from config if available, otherwise find first used port
+    if relay_port and relay_port in ports:
+        port = relay_port
+        info = ports.get(port, {})
+        proxy_ip = info.get("public_ip", "")
+        proxy_city = info.get("city", "")
+    else:
+        port = 60000
+        for p, info in ports.items():
+            if info.get("status", "").lower() == "used" and port_is_online(info):
+                port = p
+                proxy_ip = info.get("public_ip", "")
+                proxy_city = info.get("city", "")
+                break
 
     if proxy_ip:
-        print(f"[cyan]Current proxy: {proxy_ip} ({proxy_city})[/cyan]")
+        print(f"[cyan]Current proxy: {proxy_ip} ({proxy_city}) on port {port}[/cyan]")
         print()
 
     # Check if UDP TPROXY is already active

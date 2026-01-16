@@ -1,5 +1,9 @@
 # GEMINI.md
 
+## ⚠️ CRITICAL: Never Change Proxy IP
+
+**NEVER run commands that switch proxy ports or take a new IP.** The residential IP must stay consistent for payment gateways and fraud detection systems. Always use port **60000**. Avoid: `switch-port`, `rotate-ip`, `new-ip`, or any port changes in `set-port`.
+
 ## Project Overview
 
 This project, `tailscale-proxy`, is a Python-based command-line interface (CLI) tool designed to simplify the setup and management of a proxy server using Tailscale and 9proxy. It provides an interactive wizard to guide users through the configuration process, including setting up transparent TCP and UDP proxying, managing Tailscale exit nodes, and handling security features like allowlists and no-leak mode.
