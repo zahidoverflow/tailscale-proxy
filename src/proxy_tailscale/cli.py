@@ -3251,6 +3251,7 @@ def normal_mode() -> None:
         "ts-9proxy-udp-tproxy.service",
         "ts-udp-block.service",
         "ts-no-leak.service",
+        DNS_PROXY_SERVICE,
         redsocks_svc,
         LOCAL_SOCKS_SERVICE,
         FORWARD_SERVICE,
@@ -3284,72 +3285,170 @@ def normal_mode() -> None:
     print("Internet traffic will use your regular connection (not proxied).")
 
 
+DNS_PROXY_SERVICE = "ts-dns-proxy.service"
+
+
+def dns_proxy_script() -> str:
+    """Python DNS proxy that forwards queries through SOCKS5."""
+    return textwrap.dedent(
+        '''
+        #!/usr/bin/env python3
+        """DNS proxy that forwards queries through SOCKS5 proxy."""
+        import socket
+        import struct
+        import sys
+        import threading
+
+        LISTEN_IP = sys.argv[1] if len(sys.argv) > 1 else "0.0.0.0"
+        LISTEN_PORT = int(sys.argv[2]) if len(sys.argv) > 2 else 53
+        SOCKS_HOST = sys.argv[3] if len(sys.argv) > 3 else "127.0.0.1"
+        SOCKS_PORT = int(sys.argv[4]) if len(sys.argv) > 4 else 60000
+        UPSTREAM_DNS = sys.argv[5] if len(sys.argv) > 5 else "8.8.8.8"
+
+        def socks5_connect(target_host, target_port):
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(10)
+            sock.connect((SOCKS_HOST, SOCKS_PORT))
+            # SOCKS5 handshake - no auth
+            sock.send(b"\\x05\\x01\\x00")
+            resp = sock.recv(2)
+            if resp != b"\\x05\\x00":
+                raise Exception("SOCKS5 auth failed")
+            # Connect request
+            req = b"\\x05\\x01\\x00\\x01" + socket.inet_aton(target_host) + struct.pack(">H", target_port)
+            sock.send(req)
+            resp = sock.recv(10)
+            if resp[1] != 0:
+                raise Exception(f"SOCKS5 connect failed: {resp[1]}")
+            return sock
+
+        def handle_dns_tcp(client_sock, addr):
+            try:
+                # Read DNS query with length prefix
+                length_data = client_sock.recv(2)
+                if len(length_data) < 2:
+                    return
+                length = struct.unpack(">H", length_data)[0]
+                query = client_sock.recv(length)
+                # Forward through SOCKS
+                proxy = socks5_connect(UPSTREAM_DNS, 53)
+                proxy.send(length_data + query)
+                response_len = proxy.recv(2)
+                resp_length = struct.unpack(">H", response_len)[0]
+                response = proxy.recv(resp_length)
+                client_sock.send(response_len + response)
+                proxy.close()
+            except Exception as e:
+                print(f"TCP error: {e}")
+            finally:
+                client_sock.close()
+
+        def handle_dns_udp(sock):
+            while True:
+                try:
+                    data, addr = sock.recvfrom(512)
+                    # Forward via SOCKS TCP (DNS over TCP)
+                    proxy = socks5_connect(UPSTREAM_DNS, 53)
+                    length = struct.pack(">H", len(data))
+                    proxy.send(length + data)
+                    resp_len_data = proxy.recv(2)
+                    resp_len = struct.unpack(">H", resp_len_data)[0]
+                    response = proxy.recv(resp_len)
+                    sock.sendto(response, addr)
+                    proxy.close()
+                except Exception as e:
+                    print(f"UDP error: {e}")
+
+        def main():
+            print(f"DNS Proxy: {LISTEN_IP}:{LISTEN_PORT} -> SOCKS5 {SOCKS_HOST}:{SOCKS_PORT} -> {UPSTREAM_DNS}")
+            # UDP listener
+            udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            udp_sock.bind((LISTEN_IP, LISTEN_PORT))
+            udp_thread = threading.Thread(target=handle_dns_udp, args=(udp_sock,), daemon=True)
+            udp_thread.start()
+            # TCP listener
+            tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            tcp_sock.bind((LISTEN_IP, LISTEN_PORT))
+            tcp_sock.listen(5)
+            print("DNS proxy running...")
+            while True:
+                client, addr = tcp_sock.accept()
+                threading.Thread(target=handle_dns_tcp, args=(client, addr), daemon=True).start()
+
+        if __name__ == "__main__":
+            main()
+        '''
+    ).lstrip()
+
+
+def dns_proxy_unit(ts_ip: str, socks_port: int) -> str:
+    return textwrap.dedent(
+        f"""
+        [Unit]
+        Description=DNS proxy through 9proxy SOCKS5
+        After=network-online.target tailscaled.service
+        Wants=network-online.target
+
+        [Service]
+        Type=simple
+        ExecStart=/usr/bin/python3 /usr/local/sbin/ts-dns-proxy.py {ts_ip} 5353 {ts_ip} {socks_port} 8.8.8.8
+        Restart=on-failure
+        RestartSec=5
+
+        [Install]
+        WantedBy=multi-user.target
+        """
+    ).lstrip()
+
+
 @app.command("fix-dns-leak")
 def fix_dns_leak() -> None:
-    """Fix DNS leak by forcing DNS through the proxy (reduces proxy detection)."""
+    """Fix DNS leak by routing DNS through the proxy (matches DNS with IP location)."""
     distro = detect_distro()
 
-    print(Panel("DNS Leak Fix", title="Fix DNS / Proxy Detection"))
-    print("This fixes two issues:")
-    print("  1. DNS showing N/A or mismatched ISP")
-    print("  2. Proxy detection by sites like Pixelscan")
+    print(Panel("DNS Leak Fix", title="Fix DNS to Match IP Location"))
+    print("This routes DNS queries through 9proxy so DNS matches your proxy IP location.")
     print()
 
-    # Check if redsocks is running
-    redsocks_svc = redsocks_service_name(distro)
-    if not systemd_is_active(redsocks_svc):
-        print(f"[red]{redsocks_svc} is not running. Run wizard or enable-redirect first.[/red]")
+    ip = tailscale_ip()
+    if not ip:
+        print("[red]Tailscale IP not found.[/red]")
         raise typer.Exit(1)
 
-    # Fix 1: Update redsocks capabilities for UDP binding
-    print("[bold]Step 1:[/bold] Fixing UDP permissions for redsocks...")
-    ensure_redsocks_caps_if_needed(distro)
-    run_cmd(["systemctl", "restart", redsocks_svc], sudo=True, capture=False)
-    print("[green]Redsocks capabilities updated and restarted.[/green]")
+    # Get proxy port
+    _, ports = fetch_port_status()
+    port = 60000
+    for p, info in ports.items():
+        if info.get("status", "").lower() == "used" and port_is_online(info):
+            port = p
+            break
 
-    # Fix 2: Restart UDP TPROXY to apply changes
-    if systemd_is_active("ts-9proxy-udp-tproxy.service"):
-        print("[bold]Step 2:[/bold] Restarting UDP TPROXY...")
-        run_cmd(["systemctl", "restart", "ts-9proxy-udp-tproxy.service"], sudo=True, capture=False)
-        print("[green]UDP TPROXY restarted.[/green]")
-    else:
-        print("[yellow]Step 2:[/yellow] UDP TPROXY not enabled. DNS might not proxy fully.")
-        if Confirm.ask("Enable UDP TPROXY now?", default=True):
-            ip = tailscale_ip()
-            if not ip:
-                print("[red]Tailscale IP not found.[/red]")
-                raise typer.Exit(1)
-            _, ports = fetch_port_status()
-            port = 60000
-            for p, info in ports.items():
-                if info.get("status", "").lower() == "used" and port_is_online(info):
-                    port = p
-                    break
-            # Update redsocks config with UDP
-            cfg_path = redsocks_config_path(distro)
-            write_file(cfg_path, render_redsocks_config(ip, port, udp=True))
-            run_cmd(["systemctl", "restart", redsocks_svc], sudo=True, capture=False)
-            # Install UDP TPROXY
-            write_file(Path("/usr/local/sbin/ts-9proxy-udp-tproxy.sh"), udp_redirect_script(), mode=0o755)
-            write_file(Path("/etc/systemd/system/ts-9proxy-udp-tproxy.service"), udp_redirect_unit(redsocks_svc))
-            run_cmd(["systemctl", "daemon-reload"], sudo=True, capture=False)
-            run_cmd(["systemctl", "enable", "--now", "ts-9proxy-udp-tproxy.service"], sudo=True, capture=False)
-            print("[green]UDP TPROXY enabled.[/green]")
+    print(f"[bold]Step 1:[/bold] Installing DNS proxy (routes DNS through SOCKS5)...")
+    write_file(Path("/usr/local/sbin/ts-dns-proxy.py"), dns_proxy_script(), mode=0o755)
+    write_file(Path(f"/etc/systemd/system/{DNS_PROXY_SERVICE}"), dns_proxy_unit(ip, port))
+    run_cmd(["systemctl", "daemon-reload"], sudo=True, capture=False)
+    run_cmd(["systemctl", "enable", "--now", DNS_PROXY_SERVICE], sudo=True, capture=False)
+    print(f"[green]DNS proxy running on {ip}:5353[/green]")
 
-    # Fix 3: Suggest disabling Tailscale's accept-dns on exit node
-    print("[bold]Step 3:[/bold] DNS configuration...")
-    print("For best results, clients should use the proxy's DNS.")
-    print("Options:")
-    print("  a) On your phone/client: Disable 'Use Tailscale DNS' in Tailscale settings")
-    print("  b) Or set a custom DNS in your device's network settings")
-    print("")
-    print("[dim]Recommended DNS servers (use one that matches proxy location):[/dim]")
-    print("  - 8.8.8.8 / 8.8.4.4 (Google)")
-    print("  - 1.1.1.1 / 1.0.0.1 (Cloudflare)")
-    print("  - 9.9.9.9 (Quad9)")
+    print(f"\n[bold]Step 2:[/bold] Configure Tailscale Admin Console:")
+    print(f"  1. Go to: https://login.tailscale.com/admin/dns")
+    print(f"  2. Under 'Nameservers', click 'Add nameserver' -> 'Custom'")
+    print(f"  3. Add: [bold cyan]{ip}:5353[/bold cyan]")
+    print(f"  4. Enable [bold]'Override local DNS'[/bold]")
+    print()
 
-    print("\n[bold green]DNS leak fix applied.[/bold green]")
-    print("Test again at whoer.net or browserleaks.com/dns")
+    if Confirm.ask("Open Tailscale DNS settings in browser?", default=True):
+        run_cmd(["xdg-open", "https://login.tailscale.com/admin/dns"], capture=False)
+
+    print("\n[bold]Step 3:[/bold] On your phone:")
+    print("  - Keep 'Use Tailscale DNS' ON (it will now use our proxy DNS)")
+    print()
+
+    print("[bold green]DNS proxy installed![/bold green]")
+    print(f"DNS queries will now go through: Phone -> Tailscale -> {ip}:5353 -> 9proxy -> 8.8.8.8")
+    print("\nTest at whoer.net - DNS should now show correctly.")
 
 
 @app.command("fix-caps")
@@ -3381,6 +3480,7 @@ def undo() -> None:
     run_cmd(["systemctl", "disable", "--now", "ts-9proxy-redirect.service"], sudo=True, capture=False)
     run_cmd(["systemctl", "disable", "--now", "ts-udp-block.service"], sudo=True, capture=False)
     run_cmd(["systemctl", "disable", "--now", "ts-no-leak.service"], sudo=True, capture=False)
+    run_cmd(["systemctl", "disable", "--now", DNS_PROXY_SERVICE], sudo=True, capture=False)
     run_cmd(["systemctl", "disable", "--now", LOCAL_SOCKS_SERVICE], sudo=True, capture=False)
     run_cmd(["systemctl", "disable", "--now", FORWARD_SERVICE], sudo=True, capture=False)
     run_cmd(["systemctl", "disable", "--now", HTTP_PROXY_SERVICE], sudo=True, capture=False)
@@ -3389,6 +3489,7 @@ def undo() -> None:
     run_cmd(["rm", "-f", "/etc/systemd/system/ts-9proxy-redirect.service"], sudo=True, capture=False)
     run_cmd(["rm", "-f", "/etc/systemd/system/ts-udp-block.service"], sudo=True, capture=False)
     run_cmd(["rm", "-f", "/etc/systemd/system/ts-no-leak.service"], sudo=True, capture=False)
+    run_cmd(["rm", "-f", f"/etc/systemd/system/{DNS_PROXY_SERVICE}"], sudo=True, capture=False)
     run_cmd(["rm", "-f", f"/etc/systemd/system/{LOCAL_SOCKS_SERVICE}"], sudo=True, capture=False)
     run_cmd(["rm", "-f", f"/etc/systemd/system/{FORWARD_SERVICE}"], sudo=True, capture=False)
     run_cmd(["rm", "-f", f"/etc/systemd/system/{HTTP_PROXY_SERVICE}"], sudo=True, capture=False)
@@ -3398,9 +3499,11 @@ def undo() -> None:
     run_cmd(["rm", "-f", "/usr/local/sbin/ts-udp-block.sh"], sudo=True, capture=False)
     run_cmd(["rm", "-f", "/usr/local/sbin/ts-no-leak.sh"], sudo=True, capture=False)
     run_cmd(["rm", "-f", "/usr/local/sbin/ts-allowlist.sh"], sudo=True, capture=False)
+    run_cmd(["rm", "-f", "/usr/local/sbin/ts-dns-proxy.py"], sudo=True, capture=False)
     run_cmd(["systemctl", "daemon-reload"], sudo=True, capture=False)
 
     print("Done. Your proxy and tailscale remain installed.")
+    print("[yellow]Note: Remove custom DNS from Tailscale admin console if you added it.[/yellow]")
 
 
 @app.command()
