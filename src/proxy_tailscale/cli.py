@@ -1592,26 +1592,18 @@ def main(ctx: typer.Context) -> None:
 
 def menu() -> None:
     show_dashboard()
-    print("\n[bold]Menu[/bold]")
-    print("Choose an action:")
-    print("1) Dashboard (refresh)")
-    print("2) Quick setup (recommended)")
-    print("3) Fix offline (no new IP)")
-    print("4) Switch to another USED port (Today list)")
-    print("5) Enable auto-heal (restart only)")
-    print("6) Disable auto-heal")
-    print("7) Undo redirect services")
-    print("8) Stable mode (recommended for phone)")
-    print("9) No-leak strict mode (toggle)")
-    print("10) Local SOCKS forwarder (desktop)")
-    print("11) Port forwarding (TCP/UDP)")
-    print("12) HTTP proxy + PAC")
-    print("13) Share (QR + info)")
-    print("14) Allowlist (tailnet IPs)")
-    print("15) Profiles")
-    print("16) Self-test")
-    print("17) Diagnostics (full logs)")
-    print("0) Exit")
+    print()
+    console.print(
+        Panel(
+            "[bold]1[/bold] Dashboard (refresh)     [bold]5[/bold] Modes & security       [bold]9[/bold]  Diagnostics\n"
+            "[bold]2[/bold] Quick setup             [bold]6[/bold] Local proxies          [bold]10[/bold] Profiles\n"
+            "[bold]3[/bold] Fix / switch            [bold]7[/bold] Share & allowlist\n"
+            "[bold]4[/bold] Auto-heal               [bold]8[/bold] Undo / cleanup          [bold]0[/bold]  Exit",
+            title="[bold cyan]Menu[/bold cyan]",
+            border_style="cyan",
+            padding=(0, 2),
+        )
+    )
 
     choice = Prompt.ask("Enter number", default="1")
     if choice == "1":
@@ -1619,37 +1611,137 @@ def menu() -> None:
     elif choice == "2":
         wizard()
     elif choice == "3":
-        doctor()
+        fix_switch_submenu()
     elif choice == "4":
-        switch_port()
+        auto_heal_submenu()
     elif choice == "5":
-        enable_auto_heal()
+        modes_submenu()
     elif choice == "6":
-        disable_auto_heal()
+        local_proxies_submenu()
     elif choice == "7":
-        undo()
+        share_allowlist_submenu()
     elif choice == "8":
-        stable_mode()
+        undo()
     elif choice == "9":
-        toggle_strict_mode()
+        diagnostics_submenu()
     elif choice == "10":
-        local_socks_menu()
-    elif choice == "11":
-        forward_menu()
-    elif choice == "12":
-        http_proxy_menu()
-    elif choice == "13":
-        share_menu()
-    elif choice == "14":
-        allowlist_menu()
-    elif choice == "15":
         profile_menu()
-    elif choice == "16":
-        self_test()
-    elif choice == "17":
-        diagnostics_menu()
     else:
         raise typer.Exit(0)
+
+
+def fix_switch_submenu() -> None:
+    """Sub-menu for fix and port switching options."""
+    console.print(
+        Panel(
+            "[bold]1[/bold] Fix offline (no new IP)\n"
+            "[bold]2[/bold] Switch to another USED port (Today list)\n"
+            "[bold]0[/bold] Back",
+            title="[bold]Fix / Switch[/bold]",
+            border_style="yellow",
+        )
+    )
+    choice = Prompt.ask("Choice", default="0")
+    if choice == "1":
+        doctor()
+    elif choice == "2":
+        switch_port()
+
+
+def auto_heal_submenu() -> None:
+    """Sub-menu for auto-heal service management."""
+    console.print(
+        Panel(
+            "[bold]1[/bold] Enable auto-heal (restart on failure)\n"
+            "[bold]2[/bold] Disable auto-heal\n"
+            "[bold]0[/bold] Back",
+            title="[bold]Auto-heal[/bold]",
+            border_style="green",
+        )
+    )
+    choice = Prompt.ask("Choice", default="0")
+    if choice == "1":
+        enable_auto_heal()
+    elif choice == "2":
+        disable_auto_heal()
+
+
+def modes_submenu() -> None:
+    """Sub-menu for mode toggles and security settings."""
+    console.print(
+        Panel(
+            "[bold]1[/bold] Enable TCP redirect (fix missing redirect)\n"
+            "[bold]2[/bold] Stable mode (recommended for phone)\n"
+            "[bold]3[/bold] No-leak strict mode (toggle)\n"
+            "[bold]0[/bold] Back",
+            title="[bold]Modes & Security[/bold]",
+            border_style="magenta",
+        )
+    )
+    choice = Prompt.ask("Choice", default="0")
+    if choice == "1":
+        enable_redirect()
+    elif choice == "2":
+        stable_mode()
+    elif choice == "3":
+        toggle_strict_mode()
+
+
+def local_proxies_submenu() -> None:
+    """Sub-menu for local proxy services."""
+    console.print(
+        Panel(
+            "[bold]1[/bold] Local SOCKS forwarder (desktop)\n"
+            "[bold]2[/bold] Port forwarding (TCP/UDP)\n"
+            "[bold]3[/bold] HTTP proxy + PAC\n"
+            "[bold]0[/bold] Back",
+            title="[bold]Local Proxies[/bold]",
+            border_style="blue",
+        )
+    )
+    choice = Prompt.ask("Choice", default="0")
+    if choice == "1":
+        local_socks_menu()
+    elif choice == "2":
+        forward_menu()
+    elif choice == "3":
+        http_proxy_menu()
+
+
+def share_allowlist_submenu() -> None:
+    """Sub-menu for sharing and access control."""
+    console.print(
+        Panel(
+            "[bold]1[/bold] Share (QR + info)\n"
+            "[bold]2[/bold] Allowlist (tailnet IPs)\n"
+            "[bold]0[/bold] Back",
+            title="[bold]Share & Allowlist[/bold]",
+            border_style="cyan",
+        )
+    )
+    choice = Prompt.ask("Choice", default="0")
+    if choice == "1":
+        share_menu()
+    elif choice == "2":
+        allowlist_menu()
+
+
+def diagnostics_submenu() -> None:
+    """Sub-menu for diagnostics and testing."""
+    console.print(
+        Panel(
+            "[bold]1[/bold] Self-test (quick health check)\n"
+            "[bold]2[/bold] Diagnostics (full logs)\n"
+            "[bold]0[/bold] Back",
+            title="[bold]Diagnostics[/bold]",
+            border_style="yellow",
+        )
+    )
+    choice = Prompt.ask("Choice", default="0")
+    if choice == "1":
+        self_test()
+    elif choice == "2":
+        diagnostics_menu()
 
 
 def prompt_int(label: str, default: int) -> int:
@@ -1798,12 +1890,28 @@ def backend_label(value: str | None, installed: bool) -> str:
     return f"[yellow]{value}[/yellow]"
 
 
-def kv_table(rows: list[tuple[str, str]]) -> Table:
+def kv_table(rows: list[tuple[str, str]], key_width: int = 14) -> Table:
     table = Table.grid(padding=(0, 1))
-    table.add_column(style="bold cyan", no_wrap=True)
+    table.add_column(style="bold cyan", no_wrap=True, width=key_width)
     table.add_column()
     for key, value in rows:
         table.add_row(key, value)
+    return table
+
+
+def kv_table_2col(rows: list[tuple[str, str]]) -> Table:
+    """Two-column key-value layout for compact display."""
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="bold cyan", no_wrap=True, width=14)
+    table.add_column(width=12)
+    table.add_column(style="bold cyan", no_wrap=True, width=14)
+    table.add_column(width=12)
+    # Pair up rows
+    for i in range(0, len(rows), 2):
+        if i + 1 < len(rows):
+            table.add_row(rows[i][0], rows[i][1], rows[i + 1][0], rows[i + 1][1])
+        else:
+            table.add_row(rows[i][0], rows[i][1], "", "")
     return table
 
 
@@ -1964,14 +2072,26 @@ def show_dashboard() -> None:
         notes.append("Proxy port is offline.")
     if not redsocks_active:
         notes.append("Redsocks is not running.")
-    if not tcp_redirect_active:
-        notes.append("TCP redirect is off (exit node will not proxy).")
+    if exit_advertised and not tcp_redirect_active:
+        notes.append("[bold]TCP redirect is off (exit node will not proxy).[/bold]")
     if udp_tproxy_active and nonlocal_bind is False:
         notes.append("UDP tproxy needs net.ipv4.ip_nonlocal_bind=1.")
     if no_leak_active and not proxy_path_ok:
         notes.append("No-leak is on: traffic will drop until proxy path is ok.")
 
-    notes_text = "All checks look good." if not notes else "\n".join(f"- {item}" for item in notes)
+    # Action hints based on state
+    actions: list[str] = []
+    if exit_advertised and not tcp_redirect_active:
+        actions.append("[yellow]Run option 2 (Quick setup) to enable TCP redirect[/yellow]")
+    if not redsocks_active:
+        actions.append(f"[yellow]systemctl start {redsocks_service}[/yellow]")
+
+    notes_text = "[green]All checks look good.[/green]" if not notes else "\n".join(f"- {item}" for item in notes)
+    if actions:
+        notes_text += "\n\n[bold]Suggested:[/bold]\n" + "\n".join(f"  {a}" for a in actions)
+
+    # Build full-screen layout
+    term_width = console.width or 120
 
     header = Panel(
         f"[bold cyan]{APP_TITLE}[/bold cyan]\n[dim]Dashboard[/dim]",
@@ -1983,7 +2103,7 @@ def show_dashboard() -> None:
         Columns(
             [
                 Panel(kv_table(summary_rows), title="Summary", border_style="bright_blue"),
-                Panel(notes_text, title="Notes", border_style="yellow"),
+                Panel(notes_text, title="Status / Notes", border_style="yellow"),
             ],
             expand=True,
             equal=True,
@@ -2000,8 +2120,8 @@ def show_dashboard() -> None:
             equal=True,
         )
     )
-    console.print(Panel(kv_table(services_rows), title="Services + modes", border_style="blue"))
-    print("[dim]Tip: Ctrl+C exits at any time.[/dim]")
+    # Services in 2-column compact layout
+    console.print(Panel(kv_table_2col(services_rows), title="Services + Modes", border_style="blue"))
 
 
 @app.command("dashboard")
@@ -3025,6 +3145,68 @@ def strict_mode_off() -> None:
     run_cmd(["rm", "-f", "/usr/local/sbin/ts-no-leak.sh"], sudo=True, capture=False)
     run_cmd(["systemctl", "daemon-reload"], sudo=True, capture=False)
     print("[green]Strict mode disabled.[/green]")
+
+
+@app.command("enable-redirect")
+def enable_redirect(
+    enable_udp: bool = typer.Option(False, "--udp", "-u", help="Also enable UDP TPROXY"),
+) -> None:
+    """Enable TCP redirect for exit-node proxying (fixes missing redirect service)."""
+    distro = detect_distro()
+    redsocks_bin = "redsocks2" if distro == "arch" else "redsocks"
+    svc_name = redsocks_service_name(distro)
+
+    print(Panel("Enable TCP redirect for exit-node", title="TCP Redirect Setup"))
+
+    # Check tailscale is running
+    ip = tailscale_ip()
+    if not ip:
+        print("[red]Tailscale IP not found.[/red] Run 'sudo tailscale up' first.")
+        raise typer.Exit(1)
+
+    # Check redsocks
+    if not shutil.which(redsocks_bin):
+        print(f"[red]{redsocks_bin} not installed.[/red]")
+        if not ensure_binary(redsocks_bin, distro, "transparent proxy"):
+            raise typer.Exit(1)
+
+    # Get port info
+    _, ports = fetch_port_status()
+    default_port = 60000
+    for p, info in ports.items():
+        if info.get("status", "").lower() == "used":
+            default_port = p
+            break
+    port = int(Prompt.ask("Proxy port", default=str(default_port)))
+
+    # Write redsocks config
+    cfg_path = redsocks_config_path(distro)
+    backup_file(cfg_path)
+    write_file(cfg_path, render_redsocks_config(ip, port, udp=enable_udp))
+    print(f"[green]Redsocks config written: {cfg_path}[/green]")
+
+    # Start redsocks
+    ensure_redsocks_caps_if_needed(distro)
+    run_cmd(["systemctl", "enable", "--now", svc_name], sudo=True, capture=False)
+    print(f"[green]{svc_name} enabled[/green]")
+
+    # Install TCP redirect
+    write_file(Path("/usr/local/sbin/ts-9proxy-redirect.sh"), tcp_redirect_script(), mode=0o755)
+    write_file(Path("/etc/systemd/system/ts-9proxy-redirect.service"), tcp_redirect_unit(svc_name))
+    run_cmd(["systemctl", "daemon-reload"], sudo=True, capture=False)
+    run_cmd(["systemctl", "enable", "--now", "ts-9proxy-redirect.service"], sudo=True, capture=False)
+    print("[green]TCP redirect service enabled[/green]")
+
+    # Optional UDP
+    if enable_udp:
+        write_file(Path("/usr/local/sbin/ts-9proxy-udp-tproxy.sh"), udp_redirect_script(), mode=0o755)
+        write_file(Path("/etc/systemd/system/ts-9proxy-udp-tproxy.service"), udp_redirect_unit(svc_name))
+        run_cmd(["systemctl", "daemon-reload"], sudo=True, capture=False)
+        run_cmd(["systemctl", "enable", "--now", "ts-9proxy-udp-tproxy.service"], sudo=True, capture=False)
+        print("[green]UDP TPROXY service enabled[/green]")
+
+    print("\n[bold green]TCP redirect is now active.[/bold green]")
+    print("Traffic from tailnet clients will be proxied through 9proxy.")
 
 
 @app.command()
