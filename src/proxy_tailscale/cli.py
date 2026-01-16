@@ -3173,9 +3173,13 @@ def strict_mode_off() -> None:
 
 @app.command("enable-redirect")
 def enable_redirect(
-    enable_udp: bool = typer.Option(False, "--udp", "-u", help="Also enable UDP TPROXY"),
+    enable_udp: bool = typer.Option(False, "--udp", "-u", help="Enable UDP TPROXY (required for DNS through proxy)"),
 ) -> None:
-    """Enable TCP redirect for exit-node proxying (fixes missing redirect service)."""
+    """Enable TCP redirect for exit-node proxying (fixes missing redirect service).
+
+    Use --udp to also proxy UDP traffic including DNS. This is required for
+    DNS to exit from the residential proxy IP (fixes DNS leak).
+    """
     distro = detect_distro()
     redsocks_bin = "redsocks2" if distro == "arch" else "redsocks"
     svc_name = redsocks_service_name(distro)
@@ -3447,16 +3451,23 @@ def dns_proxy_unit(ts_ip: str, socks_port: int) -> str:
 
 
 @app.command("fix-dns-leak")
-def fix_dns_leak() -> None:
-    """Fix DNS leak - DNS queries go through proxy like a normal residential user."""
+def fix_dns_leak(
+    force_proxy: bool = typer.Option(False, "--force-proxy", help="Skip UDP TPROXY, use DNS proxy method"),
+) -> None:
+    """Fix DNS leak - DNS queries go through proxy like a normal residential user.
+
+    Two methods available:
+    1. UDP TPROXY (preferred): Redirect ALL UDP (including DNS) through SOCKS5
+    2. DNS Proxy (fallback): Run DNS server that forwards through SOCKS5
+
+    Method 1 is automatic - DNS just works because UDP port 53 goes through proxy.
+    Method 2 requires Tailscale Admin Console configuration.
+    """
     distro = detect_distro()
 
     print(Panel("DNS Leak Fix", title="Make DNS Match Proxy IP"))
-    print("[bold]Problem:[/bold] When using Tailscale exit node, DNS leaks to Tailscale's DNS")
-    print("         instead of going through the 9proxy like a normal user.")
-    print()
-    print("[bold]Solution:[/bold] Route ALL DNS queries through the SOCKS5 proxy.")
-    print("          DNS will exit from residential IP -> ISP sees normal DNS traffic.")
+    print("[bold]Problem:[/bold] DNS queries don't go through 9proxy, causing DNS leak.")
+    print("         dnsleaktest.com shows wrong DNS instead of residential ISP's DNS.")
     print()
 
     ip = tailscale_ip()
@@ -3480,35 +3491,101 @@ def fix_dns_leak() -> None:
         print(f"[cyan]Current proxy: {proxy_ip} ({proxy_city})[/cyan]")
         print()
 
-    print(f"[bold]Step 1:[/bold] Installing DNS proxy on VPS...")
+    # Check if UDP TPROXY is already active
+    udp_tproxy_active = systemd_is_active("ts-9proxy-udp-tproxy.service")
+
+    if udp_tproxy_active and not force_proxy:
+        print("[green]UDP TPROXY is already active![/green]")
+        print()
+        print("[bold]How it works with UDP TPROXY:[/bold]")
+        print("  Phone DNS query (UDP port 53)")
+        print("    -> Tailscale exit node (VPS)")
+        print("    -> iptables TPROXY redirects UDP")
+        print("    -> redudp forwards to SOCKS5")
+        print("    -> DNS exits from residential IP")
+        print()
+        print("[green]DNS should already match proxy IP![/green]")
+        print("Test at: [link]https://dnsleaktest.com[/link]")
+        print()
+        print("[dim]If still not working, try: tailscale-proxy fix-dns-leak --force-proxy[/dim]")
+        return
+
+    if not force_proxy:
+        # Try to enable UDP TPROXY first (the proper solution)
+        print("[bold]Method 1: Enable UDP TPROXY[/bold] (recommended)")
+        print("This redirects ALL UDP traffic (including DNS) through the proxy.")
+        print()
+
+        # Check if redsocks2 is available (has redudp support)
+        redsocks_bin = "redsocks2" if distro == "arch" else "redsocks"
+        svc_name = redsocks_service_name(distro)
+
+        if not systemd_is_active(svc_name):
+            print(f"[yellow]Redsocks not running. Enable TCP redirect first:[/yellow]")
+            print("  tailscale-proxy enable-redirect --udp")
+            print()
+            if not Confirm.ask("Enable TCP+UDP redirect now?", default=True):
+                print("[dim]Falling back to DNS proxy method...[/dim]")
+            else:
+                # Call enable_redirect with UDP
+                enable_redirect(enable_udp=True)
+                print()
+                print("[green]UDP TPROXY enabled! DNS will go through proxy.[/green]")
+                print("Test at: [link]https://dnsleaktest.com[/link]")
+                return
+
+        # Try to enable just UDP TPROXY
+        print("Enabling UDP TPROXY...")
+        try:
+            # Check TPROXY kernel module
+            result = run_cmd(["modprobe", "xt_TPROXY"], sudo=True)
+            if result.returncode != 0:
+                print("[yellow]TPROXY kernel module not available.[/yellow]")
+                print("[dim]Your VPS may not support TPROXY. Using DNS proxy method...[/dim]")
+            else:
+                # Enable UDP TPROXY
+                write_file(Path("/usr/local/sbin/ts-9proxy-udp-tproxy.sh"), udp_redirect_script(), mode=0o755)
+                write_file(Path("/etc/systemd/system/ts-9proxy-udp-tproxy.service"), udp_redirect_unit(svc_name))
+                run_cmd(["systemctl", "daemon-reload"], sudo=True, capture=False)
+                run_cmd(["systemctl", "enable", "--now", "ts-9proxy-udp-tproxy.service"], sudo=True, capture=False)
+                print("[green]UDP TPROXY enabled![/green]")
+                print()
+                print("[bold]How it works:[/bold]")
+                print("  All UDP from tailnet -> iptables TPROXY -> redudp -> SOCKS5")
+                print("  DNS (UDP 53) exits from residential IP automatically!")
+                print()
+                print("[green]Test at: https://dnsleaktest.com[/green]")
+                return
+        except Exception as e:
+            print(f"[yellow]UDP TPROXY setup failed: {e}[/yellow]")
+
+    # Fallback: DNS Proxy method
+    print()
+    print("[bold]Method 2: DNS Proxy[/bold] (fallback)")
+    print("Run a DNS server on VPS that forwards queries through SOCKS5.")
+    print()
+
+    print("Installing DNS proxy...")
     write_file(Path("/usr/local/sbin/ts-dns-proxy.py"), dns_proxy_script(), mode=0o755)
     write_file(Path(f"/etc/systemd/system/{DNS_PROXY_SERVICE}"), dns_proxy_unit(ip, port))
     run_cmd(["systemctl", "daemon-reload"], sudo=True, capture=False)
     run_cmd(["systemctl", "enable", "--now", DNS_PROXY_SERVICE], sudo=True, capture=False)
     print(f"[green]DNS proxy running on {ip}:5353[/green]")
 
-    print(f"\n[bold]Step 2:[/bold] Configure Tailscale Admin Console:")
+    print(f"\n[bold]Configure Tailscale Admin Console:[/bold]")
     print(f"  1. Go to: [link]https://login.tailscale.com/admin/dns[/link]")
     print(f"  2. Under 'Nameservers' -> 'Add nameserver' -> 'Custom'")
-    print(f"  3. Enter: [bold cyan]{ip}[/bold cyan]")
-    print(f"  4. Port: [bold cyan]5353[/bold cyan]")
-    print(f"  5. [bold]Enable 'Override local DNS'[/bold] toggle")
+    print(f"  3. Enter: [bold cyan]{ip}[/bold cyan] port [bold cyan]5353[/bold cyan]")
+    print(f"  4. [bold]Enable 'Override local DNS'[/bold] toggle")
     print()
-
-    print("[bold]Step 3:[/bold] On your phone/device:")
-    print("  - Keep 'Use Tailscale DNS' [bold]ON[/bold]")
-    print()
-
-    print("[bold green]How it works:[/bold green]")
+    print("[bold green]How DNS proxy works:[/bold green]")
     print(f"  Phone DNS query")
-    print(f"    -> Tailscale (uses custom DNS: {ip}:5353)")
+    print(f"    -> Tailscale (custom DNS: {ip}:5353)")
     print(f"    -> VPS DNS proxy")
     print(f"    -> SOCKS5 through 9proxy")
-    print(f"    -> DNS query exits from {proxy_ip or 'residential IP'}")
-    print(f"    -> ISP's DNS servers see query from residential IP")
+    print(f"    -> DNS exits from {proxy_ip or 'residential IP'}")
     print()
-    print("[green]Result: dnsleaktest.com will show ISP's DNS (like Spectrum)[/green]")
-    print("[green]        just like when using 9proxy directly on local PC![/green]")
+    print("[green]Test at: https://dnsleaktest.com[/green]")
 
 
 @app.command("fix-caps")
