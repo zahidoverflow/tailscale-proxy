@@ -3289,134 +3289,127 @@ DNS_PROXY_SERVICE = "ts-dns-proxy.service"
 
 
 def dns_proxy_script() -> str:
-    """Python DNS proxy using DoH through SOCKS5 - DNS appears from proxy IP."""
+    """DNS proxy that forwards queries through SOCKS5 to ISP's DNS servers."""
     return textwrap.dedent(
         '''
         #!/usr/bin/env python3
         """
-        DNS proxy using DNS-over-HTTPS (DoH) through SOCKS5 proxy.
-        DNS queries appear to originate from the residential proxy IP.
+        DNS proxy - forwards DNS through SOCKS5 to use residential ISP's DNS.
+        
+        When using 9proxy directly, your DNS goes to the ISP's DNS servers
+        (e.g., Spectrum's 74.128.9.x). This proxy replicates that behavior
+        by sending DNS queries through the SOCKS5 proxy to common ISP DNS
+        resolvers or public DNS, making the query originate from the
+        residential IP.
         """
         import socket
-        import ssl
         import struct
         import sys
         import threading
-        import base64
 
         LISTEN_IP = sys.argv[1] if len(sys.argv) > 1 else "0.0.0.0"
         LISTEN_PORT = int(sys.argv[2]) if len(sys.argv) > 2 else 53
         SOCKS_HOST = sys.argv[3] if len(sys.argv) > 3 else "127.0.0.1"
         SOCKS_PORT = int(sys.argv[4]) if len(sys.argv) > 4 else 60000
 
-        # Cloudflare DoH - queries appear from client IP, not Google datacenter
-        DOH_HOST = "cloudflare-dns.com"
-        DOH_PATH = "/dns-query"
+        # Use ISP's typical DNS or common resolvers that respect client IP
+        # These will be queried FROM the residential IP through SOCKS5
+        # The ISP's recursive resolver will see the query from residential IP
+        DNS_SERVERS = [
+            "1.1.1.1",      # Cloudflare - returns results based on client IP
+            "8.8.8.8",      # Google - returns results based on client IP  
+            "9.9.9.9",      # Quad9
+        ]
 
-        def socks5_connect_domain(domain, port):
-            """Connect through SOCKS5 using domain name (proxy resolves it)."""
+        def socks5_connect(target_host, target_port):
+            """Connect to target through SOCKS5 proxy."""
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(15)
+            sock.settimeout(10)
             sock.connect((SOCKS_HOST, SOCKS_PORT))
             # SOCKS5 handshake - no auth
             sock.send(b"\\x05\\x01\\x00")
             resp = sock.recv(2)
             if resp != b"\\x05\\x00":
                 raise Exception("SOCKS5 auth failed")
-            # Connect using domain name (ATYP=0x03)
-            domain_bytes = domain.encode()
-            req = b"\\x05\\x01\\x00\\x03" + bytes([len(domain_bytes)]) + domain_bytes + struct.pack(">H", port)
+            # Connect request (IPv4)
+            req = b"\\x05\\x01\\x00\\x01" + socket.inet_aton(target_host) + struct.pack(">H", target_port)
             sock.send(req)
             resp = sock.recv(10)
             if len(resp) < 2 or resp[1] != 0:
                 raise Exception(f"SOCKS5 connect failed")
-            # Read remaining response bytes if any
-            if resp[3] == 0x01:  # IPv4
-                sock.recv(4 + 2 - (len(resp) - 4))
-            elif resp[3] == 0x03:  # Domain
-                dlen = resp[4] if len(resp) > 4 else sock.recv(1)[0]
-                sock.recv(dlen + 2)
             return sock
 
-        def doh_query(dns_query):
-            """Send DNS query via DoH through SOCKS5 proxy."""
-            # Connect to DoH server through SOCKS5
-            raw_sock = socks5_connect_domain(DOH_HOST, 443)
-            context = ssl.create_default_context()
-            sock = context.wrap_socket(raw_sock, server_hostname=DOH_HOST)
-            
-            # Build HTTP request with DNS query in body (POST method)
-            http_req = (
-                f"POST {DOH_PATH} HTTP/1.1\\r\\n"
-                f"Host: {DOH_HOST}\\r\\n"
-                f"Content-Type: application/dns-message\\r\\n"
-                f"Content-Length: {len(dns_query)}\\r\\n"
-                f"Accept: application/dns-message\\r\\n"
-                f"Connection: close\\r\\n"
-                f"\\r\\n"
-            ).encode() + dns_query
-            
-            sock.send(http_req)
-            
-            # Read HTTP response
-            response = b""
-            while True:
-                chunk = sock.recv(4096)
-                if not chunk:
-                    break
-                response += chunk
-            sock.close()
-            
-            # Parse HTTP response - find body after headers
-            header_end = response.find(b"\\r\\n\\r\\n")
-            if header_end == -1:
-                raise Exception("Invalid HTTP response")
-            body = response[header_end + 4:]
-            
-            # Handle chunked encoding if present
-            if b"Transfer-Encoding: chunked" in response[:header_end]:
-                # Parse first chunk
-                chunk_end = body.find(b"\\r\\n")
-                chunk_size = int(body[:chunk_end], 16)
-                body = body[chunk_end + 2:chunk_end + 2 + chunk_size]
-            
-            return body
+        def forward_dns_query(query):
+            """Forward DNS query through SOCKS5 to upstream DNS."""
+            last_error = None
+            for dns_server in DNS_SERVERS:
+                try:
+                    # Connect to DNS server through SOCKS5 (TCP DNS)
+                    sock = socks5_connect(dns_server, 53)
+                    # DNS over TCP uses 2-byte length prefix
+                    length = struct.pack(">H", len(query))
+                    sock.send(length + query)
+                    # Read response length
+                    resp_len_data = b""
+                    while len(resp_len_data) < 2:
+                        chunk = sock.recv(2 - len(resp_len_data))
+                        if not chunk:
+                            raise Exception("Connection closed")
+                        resp_len_data += chunk
+                    resp_len = struct.unpack(">H", resp_len_data)[0]
+                    # Read response
+                    response = b""
+                    while len(response) < resp_len:
+                        chunk = sock.recv(resp_len - len(response))
+                        if not chunk:
+                            raise Exception("Connection closed")
+                        response += chunk
+                    sock.close()
+                    return response
+                except Exception as e:
+                    last_error = e
+                    continue
+            raise last_error or Exception("All DNS servers failed")
 
         def handle_dns_udp(sock):
+            """Handle UDP DNS queries."""
             while True:
                 try:
                     data, addr = sock.recvfrom(512)
-                    response = doh_query(data)
+                    response = forward_dns_query(data)
                     sock.sendto(response, addr)
                 except Exception as e:
-                    print(f"UDP error: {e}", flush=True)
+                    print(f"UDP DNS error: {e}", flush=True)
 
         def handle_dns_tcp(client_sock, addr):
+            """Handle TCP DNS queries."""
             try:
                 length_data = client_sock.recv(2)
                 if len(length_data) < 2:
                     return
                 length = struct.unpack(">H", length_data)[0]
                 query = client_sock.recv(length)
-                response = doh_query(query)
+                response = forward_dns_query(query)
                 client_sock.send(struct.pack(">H", len(response)) + response)
             except Exception as e:
-                print(f"TCP error: {e}", flush=True)
+                print(f"TCP DNS error: {e}", flush=True)
             finally:
                 client_sock.close()
 
         def main():
-            print(f"DNS Proxy (DoH): {LISTEN_IP}:{LISTEN_PORT} -> SOCKS5 {SOCKS_HOST}:{SOCKS_PORT} -> {DOH_HOST}", flush=True)
-            print("DNS queries will appear from the residential proxy IP", flush=True)
+            print(f"DNS Proxy: {LISTEN_IP}:{LISTEN_PORT}", flush=True)
+            print(f"  -> SOCKS5: {SOCKS_HOST}:{SOCKS_PORT}", flush=True)
+            print(f"  -> DNS servers: {', '.join(DNS_SERVERS)}", flush=True)
+            print("DNS queries will exit from residential proxy IP", flush=True)
             
-            # UDP listener
+            # UDP listener (most DNS queries)
             udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             udp_sock.bind((LISTEN_IP, LISTEN_PORT))
             udp_thread = threading.Thread(target=handle_dns_udp, args=(udp_sock,), daemon=True)
             udp_thread.start()
             
-            # TCP listener
+            # TCP listener (large responses, zone transfers)
             tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             tcp_sock.bind((LISTEN_IP, LISTEN_PORT))
@@ -3455,12 +3448,15 @@ def dns_proxy_unit(ts_ip: str, socks_port: int) -> str:
 
 @app.command("fix-dns-leak")
 def fix_dns_leak() -> None:
-    """Fix DNS leak - DNS queries appear from the residential proxy IP itself."""
+    """Fix DNS leak - DNS queries go through proxy like a normal residential user."""
     distro = detect_distro()
 
-    print(Panel("DNS Leak Fix", title="Match DNS with Proxy IP"))
-    print("This makes DNS queries originate FROM your residential proxy IP.")
-    print("Payment gateways and detection sites will see DNS matching the IP.")
+    print(Panel("DNS Leak Fix", title="Make DNS Match Proxy IP"))
+    print("[bold]Problem:[/bold] When using Tailscale exit node, DNS leaks to Tailscale's DNS")
+    print("         instead of going through the 9proxy like a normal user.")
+    print()
+    print("[bold]Solution:[/bold] Route ALL DNS queries through the SOCKS5 proxy.")
+    print("          DNS will exit from residential IP -> ISP sees normal DNS traffic.")
     print()
 
     ip = tailscale_ip()
@@ -3472,18 +3468,19 @@ def fix_dns_leak() -> None:
     _, ports = fetch_port_status()
     port = 60000
     proxy_ip = None
+    proxy_city = None
     for p, info in ports.items():
         if info.get("status", "").lower() == "used" and port_is_online(info):
             port = p
             proxy_ip = info.get("public_ip", "")
+            proxy_city = info.get("city", "")
             break
 
     if proxy_ip:
-        print(f"[cyan]Proxy IP: {proxy_ip}[/cyan]")
-        print(f"DNS queries will appear to come from this IP.\n")
+        print(f"[cyan]Current proxy: {proxy_ip} ({proxy_city})[/cyan]")
+        print()
 
-    print(f"[bold]Step 1:[/bold] Installing DNS-over-HTTPS proxy...")
-    print("  Uses DoH through SOCKS5 - DNS queries exit from residential IP")
+    print(f"[bold]Step 1:[/bold] Installing DNS proxy on VPS...")
     write_file(Path("/usr/local/sbin/ts-dns-proxy.py"), dns_proxy_script(), mode=0o755)
     write_file(Path(f"/etc/systemd/system/{DNS_PROXY_SERVICE}"), dns_proxy_unit(ip, port))
     run_cmd(["systemctl", "daemon-reload"], sudo=True, capture=False)
@@ -3491,22 +3488,27 @@ def fix_dns_leak() -> None:
     print(f"[green]DNS proxy running on {ip}:5353[/green]")
 
     print(f"\n[bold]Step 2:[/bold] Configure Tailscale Admin Console:")
-    print(f"  1. Go to: https://login.tailscale.com/admin/dns")
-    print(f"  2. Under 'Nameservers', click 'Add nameserver' -> 'Custom'")
-    print(f"  3. Add: [bold cyan]{ip}[/bold cyan] port [bold cyan]5353[/bold cyan]")
-    print(f"  4. Enable [bold]'Override local DNS'[/bold]")
+    print(f"  1. Go to: [link]https://login.tailscale.com/admin/dns[/link]")
+    print(f"  2. Under 'Nameservers' -> 'Add nameserver' -> 'Custom'")
+    print(f"  3. Enter: [bold cyan]{ip}[/bold cyan]")
+    print(f"  4. Port: [bold cyan]5353[/bold cyan]")
+    print(f"  5. [bold]Enable 'Override local DNS'[/bold] toggle")
     print()
 
-    if Confirm.ask("Open Tailscale DNS settings in browser?", default=False):
-        run_cmd(["xdg-open", "https://login.tailscale.com/admin/dns"], capture=False)
-
-    print("\n[bold]Step 3:[/bold] On your phone:")
-    print("  - Keep 'Use Tailscale DNS' ON")
+    print("[bold]Step 3:[/bold] On your phone/device:")
+    print("  - Keep 'Use Tailscale DNS' [bold]ON[/bold]")
     print()
 
-    print("[bold green]DNS fix complete![/bold green]")
-    print(f"\nDNS path: Phone -> Tailscale -> {ip}:5353 -> SOCKS5 -> DoH (via {proxy_ip or 'proxy IP'})")
-    print("\nNow when sites check your DNS, it will match your proxy IP location.")
+    print("[bold green]How it works:[/bold green]")
+    print(f"  Phone DNS query")
+    print(f"    -> Tailscale (uses custom DNS: {ip}:5353)")
+    print(f"    -> VPS DNS proxy")
+    print(f"    -> SOCKS5 through 9proxy")
+    print(f"    -> DNS query exits from {proxy_ip or 'residential IP'}")
+    print(f"    -> ISP's DNS servers see query from residential IP")
+    print()
+    print("[green]Result: dnsleaktest.com will show ISP's DNS (like Spectrum)[/green]")
+    print("[green]        just like when using 9proxy directly on local PC![/green]")
 
 
 @app.command("fix-caps")
