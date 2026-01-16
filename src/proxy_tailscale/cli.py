@@ -743,11 +743,12 @@ def no_leak_unit() -> str:
 def ensure_redsocks_caps_if_needed(distro: str) -> None:
     if distro != "arch":
         return
+    # CAP_NET_ADMIN + CAP_NET_RAW for TPROXY, CAP_NET_BIND_SERVICE for UDP port binding
     override = textwrap.dedent(
         """
         [Service]
-        AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
-        CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+        AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE
+        CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE
         """
     ).lstrip()
     path = Path("/etc/systemd/system/redsocks2.service.d/override.conf")
@@ -1671,8 +1672,9 @@ def modes_submenu() -> None:
     console.print(
         Panel(
             "[bold]1[/bold] Enable TCP redirect (fix missing redirect)\n"
-            "[bold]2[/bold] Stable mode (recommended for phone)\n"
-            "[bold]3[/bold] No-leak strict mode (toggle)\n"
+            "[bold]2[/bold] Fix DNS leak / proxy detection\n"
+            "[bold]3[/bold] Stable mode (recommended for phone)\n"
+            "[bold]4[/bold] No-leak strict mode (toggle)\n"
             "[bold]0[/bold] Back",
             title="[bold]Modes & Security[/bold]",
             border_style="magenta",
@@ -1682,8 +1684,10 @@ def modes_submenu() -> None:
     if choice == "1":
         enable_redirect()
     elif choice == "2":
-        stable_mode()
+        fix_dns_leak()
     elif choice == "3":
+        stable_mode()
+    elif choice == "4":
         toggle_strict_mode()
 
 
@@ -3278,6 +3282,93 @@ def normal_mode() -> None:
 
     print("\n[bold green]System is now in normal mode.[/bold green]")
     print("Internet traffic will use your regular connection (not proxied).")
+
+
+@app.command("fix-dns-leak")
+def fix_dns_leak() -> None:
+    """Fix DNS leak by forcing DNS through the proxy (reduces proxy detection)."""
+    distro = detect_distro()
+
+    print(Panel("DNS Leak Fix", title="Fix DNS / Proxy Detection"))
+    print("This fixes two issues:")
+    print("  1. DNS showing N/A or mismatched ISP")
+    print("  2. Proxy detection by sites like Pixelscan")
+    print()
+
+    # Check if redsocks is running
+    redsocks_svc = redsocks_service_name(distro)
+    if not systemd_is_active(redsocks_svc):
+        print(f"[red]{redsocks_svc} is not running. Run wizard or enable-redirect first.[/red]")
+        raise typer.Exit(1)
+
+    # Fix 1: Update redsocks capabilities for UDP binding
+    print("[bold]Step 1:[/bold] Fixing UDP permissions for redsocks...")
+    ensure_redsocks_caps_if_needed(distro)
+    run_cmd(["systemctl", "restart", redsocks_svc], sudo=True, capture=False)
+    print("[green]Redsocks capabilities updated and restarted.[/green]")
+
+    # Fix 2: Restart UDP TPROXY to apply changes
+    if systemd_is_active("ts-9proxy-udp-tproxy.service"):
+        print("[bold]Step 2:[/bold] Restarting UDP TPROXY...")
+        run_cmd(["systemctl", "restart", "ts-9proxy-udp-tproxy.service"], sudo=True, capture=False)
+        print("[green]UDP TPROXY restarted.[/green]")
+    else:
+        print("[yellow]Step 2:[/yellow] UDP TPROXY not enabled. DNS might not proxy fully.")
+        if Confirm.ask("Enable UDP TPROXY now?", default=True):
+            ip = tailscale_ip()
+            if not ip:
+                print("[red]Tailscale IP not found.[/red]")
+                raise typer.Exit(1)
+            _, ports = fetch_port_status()
+            port = 60000
+            for p, info in ports.items():
+                if info.get("status", "").lower() == "used" and port_is_online(info):
+                    port = p
+                    break
+            # Update redsocks config with UDP
+            cfg_path = redsocks_config_path(distro)
+            write_file(cfg_path, render_redsocks_config(ip, port, udp=True))
+            run_cmd(["systemctl", "restart", redsocks_svc], sudo=True, capture=False)
+            # Install UDP TPROXY
+            write_file(Path("/usr/local/sbin/ts-9proxy-udp-tproxy.sh"), udp_redirect_script(), mode=0o755)
+            write_file(Path("/etc/systemd/system/ts-9proxy-udp-tproxy.service"), udp_redirect_unit(redsocks_svc))
+            run_cmd(["systemctl", "daemon-reload"], sudo=True, capture=False)
+            run_cmd(["systemctl", "enable", "--now", "ts-9proxy-udp-tproxy.service"], sudo=True, capture=False)
+            print("[green]UDP TPROXY enabled.[/green]")
+
+    # Fix 3: Suggest disabling Tailscale's accept-dns on exit node
+    print("[bold]Step 3:[/bold] DNS configuration...")
+    print("For best results, clients should use the proxy's DNS.")
+    print("Options:")
+    print("  a) On your phone/client: Disable 'Use Tailscale DNS' in Tailscale settings")
+    print("  b) Or set a custom DNS in your device's network settings")
+    print("")
+    print("[dim]Recommended DNS servers (use one that matches proxy location):[/dim]")
+    print("  - 8.8.8.8 / 8.8.4.4 (Google)")
+    print("  - 1.1.1.1 / 1.0.0.1 (Cloudflare)")
+    print("  - 9.9.9.9 (Quad9)")
+
+    print("\n[bold green]DNS leak fix applied.[/bold green]")
+    print("Test again at whoer.net or browserleaks.com/dns")
+
+
+@app.command("fix-caps")
+def fix_caps() -> None:
+    """Fix redsocks capabilities for UDP binding (fixes 'bind: Permission denied' errors)."""
+    distro = detect_distro()
+    redsocks_svc = redsocks_service_name(distro)
+
+    print(Panel("Fix Redsocks Capabilities", title="Permission Fix"))
+    print("This fixes 'bind: Permission denied' errors in redsocks logs.")
+
+    ensure_redsocks_caps_if_needed(distro)
+    run_cmd(["systemctl", "restart", redsocks_svc], sudo=True, capture=False)
+
+    if systemd_is_active("ts-9proxy-udp-tproxy.service"):
+        run_cmd(["systemctl", "restart", "ts-9proxy-udp-tproxy.service"], sudo=True, capture=False)
+
+    print("[green]Capabilities fixed and services restarted.[/green]")
+    print("Check logs with: journalctl -u redsocks2 -f")
 
 
 @app.command()
