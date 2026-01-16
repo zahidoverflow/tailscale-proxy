@@ -3232,5 +3232,42 @@ def wizard(save_doc: str | None = None) -> None:
     print(f"\nSetup log saved to: {saved}")
 
 
+# =============================================================================
+# IP REPUTATION COMMANDS
+# =============================================================================
+
+
+@app.command("ip-check")
+def ip_check(
+    ip: str = typer.Argument(None, help="IP address to check (uses current proxy IP if not specified)"),
+    configure: bool = typer.Option(False, "--configure", "-c", help="Configure API keys"),
+) -> None:
+    """Check IP reputation across multiple sources."""
+    from proxy_tailscale.ip_reputation import check_ip_reputation, configure_api_keys
+
+    if configure:
+        configure_api_keys()
+        return
+
+    if not ip:
+        # Try to get IP from current proxy port
+        _, ports = fetch_port_status()
+        if ports:
+            first_port = sorted(ports.keys())[0]
+            info = ports[first_port]
+            public_ip = info.get("public_ip", "")
+            if public_ip and public_ip != "-":
+                ip = public_ip
+                print(f"[dim]Using proxy IP from port {first_port}: {ip}[/dim]\n")
+
+    if not ip:
+        print("[red]No IP specified and could not detect proxy IP.[/red]")
+        print("Usage: tailscale-proxy ip-check <IP>")
+        print("       tailscale-proxy ip-check --configure")
+        raise typer.Exit(1)
+
+    check_ip_reputation(ip)
+
+
 if __name__ == "__main__":
     app()
