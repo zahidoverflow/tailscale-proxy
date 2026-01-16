@@ -2412,7 +2412,8 @@ def doctor(
         print("[yellow]No refresh performed (allow_refresh is false).[/yellow]")
         return
 
-    if no_prompt or Confirm.ask("Refresh this port now? (consumes a new IP)", default=False):
+    print("[bold red]WARNING: Refreshing will consume a NEW IP from your quota![/bold red]")
+    if no_prompt or Confirm.ask(f"Refresh port {port} now? (consumes new IP)", default=False):
         res = run_cmd(["9proxy", "proxy", "-c", country, "-p", str(port)], capture=True)
         if res.returncode == 0:
             print("[green]Port refreshed.[/green]")
@@ -2491,7 +2492,8 @@ def watch(
                         continue
 
             if allow_refresh:
-                if no_prompt or Confirm.ask("Refresh this port now? (consumes a new IP)", default=False):
+                print("[bold red]WARNING: Refreshing will consume a NEW IP from your quota![/bold red]")
+                if no_prompt or Confirm.ask(f"Refresh port {port} now? (consumes new IP)", default=False):
                     res = run_cmd(["9proxy", "proxy", "-c", country, "-p", str(port)], capture=True)
                     if res.returncode == 0:
                         print("[green]Port refreshed.[/green]")
@@ -3383,24 +3385,95 @@ def wizard(save_doc: str | None = None) -> None:
             if Confirm.ask(msg, default=True):
                 actions.append(f"Reused existing port {port} (no refresh)")
             else:
-                res = run_cmd(["9proxy", "proxy", "-c", country, "-p", str(port)], capture=True)
-                if res.returncode == 0:
-                    actions.append(f"Refreshed port {port} -> {country}")
+                # Offer to switch to another used port first
+                other_used = [p for p, info in ports.items() if info["status"].lower() == "used" and p != port and port_is_online(info)]
+                if other_used:
+                    print(f"[yellow]Other online used ports available: {', '.join(map(str, sorted(other_used)))}[/yellow]")
+                    if Confirm.ask("Switch to another USED port instead of refreshing? (saves IP)", default=True):
+                        new_port = attempt_switch_to_used_port(None, ip, distro, open_ui=True)
+                        if new_port:
+                            port = new_port
+                            actions.append(f"Switched to used port {new_port} (no new IP)")
+                            _, ports = fetch_port_status()
+                            port_info = ports.get(port)
+                        else:
+                            actions.append(f"Reused existing port {port} (no refresh)")
+                    else:
+                        print("[bold red]WARNING: This will consume a NEW IP from your quota![/bold red]")
+                        if Confirm.ask(f"Refresh port {port} now? (consumes new IP)", default=False):
+                            res = run_cmd(["9proxy", "proxy", "-c", country, "-p", str(port)], capture=True)
+                            if res.returncode == 0:
+                                actions.append(f"Refreshed port {port} -> {country}")
+                        else:
+                            actions.append(f"Reused existing port {port} (no refresh)")
+                else:
+                    print("[bold red]WARNING: This will consume a NEW IP from your quota![/bold red]")
+                    if Confirm.ask(f"Refresh port {port} now? (consumes new IP)", default=False):
+                        res = run_cmd(["9proxy", "proxy", "-c", country, "-p", str(port)], capture=True)
+                        if res.returncode == 0:
+                            actions.append(f"Refreshed port {port} -> {country}")
+                    else:
+                        actions.append(f"Reused existing port {port} (no refresh)")
         else:
-            if Confirm.ask("Refresh this port now? (consumes a new IP)", default=False):
-                res = run_cmd(["9proxy", "proxy", "-c", country, "-p", str(port)], capture=True)
-                if res.returncode == 0:
-                    actions.append(f"Refreshed port {port} -> {country}")
+            # Port is offline - offer to switch to another used port first
+            other_used = [p for p, info in ports.items() if info["status"].lower() == "used" and p != port and port_is_online(info)]
+            if other_used:
+                print(f"[yellow]Other online used ports available: {', '.join(map(str, sorted(other_used)))}[/yellow]")
+                if Confirm.ask("Switch to another USED port? (recommended, saves IP)", default=True):
+                    new_port = attempt_switch_to_used_port(None, ip, distro, open_ui=True)
+                    if new_port:
+                        port = new_port
+                        actions.append(f"Switched to used port {new_port} (no new IP)")
+                        _, ports = fetch_port_status()
+                        port_info = ports.get(port)
+                    else:
+                        actions.append(f"Port {port} offline; no refresh (manual action required)")
+                else:
+                    print("[bold red]WARNING: This will consume a NEW IP from your quota![/bold red]")
+                    if Confirm.ask(f"Refresh port {port} now? (consumes new IP)", default=False):
+                        res = run_cmd(["9proxy", "proxy", "-c", country, "-p", str(port)], capture=True)
+                        if res.returncode == 0:
+                            actions.append(f"Refreshed port {port} -> {country}")
+                    else:
+                        actions.append(f"Port {port} offline; no refresh (manual action required)")
             else:
-                actions.append(f"Port {port} offline; no refresh (manual action required)")
+                print("[bold red]WARNING: This will consume a NEW IP from your quota![/bold red]")
+                if Confirm.ask(f"Refresh port {port} now? (consumes new IP)", default=False):
+                    res = run_cmd(["9proxy", "proxy", "-c", country, "-p", str(port)], capture=True)
+                    if res.returncode == 0:
+                        actions.append(f"Refreshed port {port} -> {country}")
+                else:
+                    actions.append(f"Port {port} offline; no refresh (manual action required)")
     else:
-        msg = "This port is free. Create a new proxy on this port now? (consumes a new proxy)"
-        if Confirm.ask(msg, default=False):
-            res = run_cmd(["9proxy", "proxy", "-c", country, "-p", str(port)], capture=True)
-            if res.returncode == 0:
-                actions.append(f"9proxy port {port} -> {country}")
+        # Port is free - check if there are used ports to suggest first
+        used_online = [p for p, info in ports.items() if info["status"].lower() == "used" and port_is_online(info)]
+        if used_online:
+            print(f"[green]You have existing online ports: {', '.join(map(str, sorted(used_online)))}[/green]")
+            if Confirm.ask("Use an existing port instead of creating new? (recommended, saves IP)", default=True):
+                new_port = attempt_switch_to_used_port(None, ip, distro, open_ui=True)
+                if new_port:
+                    port = new_port
+                    actions.append(f"Using existing port {new_port} (no new IP)")
+                    _, ports = fetch_port_status()
+                    port_info = ports.get(port)
+                else:
+                    actions.append(f"Skipped proxy allocation for port {port}")
+            else:
+                print("[bold red]WARNING: This will consume a NEW IP from your quota![/bold red]")
+                if Confirm.ask(f"Create new proxy on port {port}? (consumes new IP)", default=False):
+                    res = run_cmd(["9proxy", "proxy", "-c", country, "-p", str(port)], capture=True)
+                    if res.returncode == 0:
+                        actions.append(f"9proxy port {port} -> {country}")
+                else:
+                    actions.append(f"Skipped proxy allocation for port {port}")
         else:
-            actions.append(f"Skipped proxy allocation for port {port}")
+            print("[bold red]WARNING: This will consume a NEW IP from your quota![/bold red]")
+            if Confirm.ask(f"Create new proxy on port {port}? (consumes new IP)", default=False):
+                res = run_cmd(["9proxy", "proxy", "-c", country, "-p", str(port)], capture=True)
+                if res.returncode == 0:
+                    actions.append(f"9proxy port {port} -> {country}")
+            else:
+                actions.append(f"Skipped proxy allocation for port {port}")
 
     mode = Prompt.ask("Mode", choices=["per-app", "exit-node"], default="exit-node")
     enable_udp = False
