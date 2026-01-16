@@ -3173,18 +3173,18 @@ def strict_mode_off() -> None:
 
 @app.command("enable-redirect")
 def enable_redirect(
-    enable_udp: bool = typer.Option(False, "--udp", "-u", help="Enable UDP TPROXY (required for DNS through proxy)"),
+    enable_udp: bool = typer.Option(True, "--udp/--no-udp", "-u", help="Enable UDP TPROXY (required for DNS through proxy)"),
 ) -> None:
-    """Enable TCP redirect for exit-node proxying (fixes missing redirect service).
+    """Enable TCP+UDP redirect for exit-node proxying.
 
-    Use --udp to also proxy UDP traffic including DNS. This is required for
-    DNS to exit from the residential proxy IP (fixes DNS leak).
+    UDP TPROXY is enabled by default - this is required for DNS to exit from
+    the residential proxy IP (fixes DNS leak). Use --no-udp to disable.
     """
     distro = detect_distro()
     redsocks_bin = "redsocks2" if distro == "arch" else "redsocks"
     svc_name = redsocks_service_name(distro)
 
-    print(Panel("Enable TCP redirect for exit-node", title="TCP Redirect Setup"))
+    print(Panel("Enable TCP+UDP redirect for exit-node", title="Redirect Setup"))
 
     # Check tailscale is running
     ip = tailscale_ip()
@@ -3844,7 +3844,8 @@ def wizard(save_doc: str | None = None) -> None:
             cfg_path = redsocks_config_path(distro)
             svc_name = redsocks_service_name(distro)
 
-            enable_udp = Confirm.ask("Enable UDP/QUIC with redudp + TPROXY?", default=False)
+            # UDP TPROXY is required for DNS to go through proxy (fixes DNS leak)
+            enable_udp = Confirm.ask("Enable UDP TPROXY? (required for DNS through proxy)", default=True)
             backup_file(cfg_path)
             write_file(cfg_path, render_redsocks_config(ip, port, udp=enable_udp))
             actions.append(f"Redsocks config written: {cfg_path}")
