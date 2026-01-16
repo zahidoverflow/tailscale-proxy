@@ -465,7 +465,7 @@ def backup_file(path: Path) -> None:
 def render_redsocks_config(ip: str, port: int, udp: bool) -> str:
     base = textwrap.dedent(
         f"""
-        # Managed by {APP_ID}. Manual edits may be overwritten.
+        /* Managed by {APP_ID}. Manual edits may be overwritten. */
         base {{
           log_debug = off;
           log_info = on;
